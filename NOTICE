@@ -1,0 +1,29 @@
+Natively Local Fork
+===================
+
+This product is a modified fork of the upstream Natively AI meeting copilot.
+The upstream project is licensed under the GNU Affero General Public License
+version 3.0 or later (AGPL-3.0-or-later). This fork keeps the same license.
+
+Modification notice:
+
+- Modified on 2026-06-08.
+- Hosted payment, trial, quota, upgrade and legacy managed API surfaces were
+  removed or converted to local compatibility no-ops.
+- Former plan-gated desktop features are implemented as local AGPL-licensed
+  source in this repository.
+- See FORK_NOTICE.md for the detailed modification record.
+
+Redistribution notice:
+
+If you distribute this fork, distribute the corresponding source code for the
+exact version you ship. If you run a modified version for users over a network,
+AGPL-3.0 section 13 requires that those users can receive the corresponding
+source code.
+
+No trademark grant:
+
+This notice does not grant trademark rights. Product names, logos and marks may
+belong to their respective owners.
+
+This notice is provided for compliance clarity and is not legal advice.
