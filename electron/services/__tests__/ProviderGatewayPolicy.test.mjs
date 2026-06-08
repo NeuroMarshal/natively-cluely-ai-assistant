@@ -69,7 +69,6 @@ test('LLMHelper guards every outbound provider with assertOutboundScopes', () =>
     "this.assertOutboundScopes('openai'",
     "this.assertOutboundScopes('claude'",
     "this.assertOutboundScopes('gemini'",
-    "this.assertOutboundScopes('natively'",
     "this.assertOutboundScopes('custom_curl'",
     "this.assertOutboundScopes('custom_provider'",
   ]) {
@@ -84,11 +83,15 @@ test('LLMHelper passes data scopes and policy to routeLLMProviders for fallback 
   assert.match(src, /scopePolicy,/);
 });
 
-test('Embedding provider resolver fails closed when embeddings scope is denied', () => {
+test('Embedding provider resolver is local-only (knowledge base embedded on-device)', () => {
   const src = read('electron/rag/EmbeddingProviderResolver.ts');
 
-  assert.match(src, /assertProviderDataScopes\('openai_embeddings', \['embeddings'\], config\.providerDataScopes\)/);
-  assert.match(src, /assertProviderDataScopes\('gemini_embeddings', \['embeddings'\], config\.providerDataScopes\)/);
+  // Embeddings never leave the device in this fork, so there is no cloud embedding
+  // path to fail closed — the resolver must not construct cloud/Ollama providers.
+  assert.doesNotMatch(src, /new OpenAIEmbeddingProvider/);
+  assert.doesNotMatch(src, /new GeminiEmbeddingProvider/);
+  assert.doesNotMatch(src, /new OllamaEmbeddingProvider/);
+  assert.match(src, /resolveActiveEmbeddingModelId/);
 });
 
 test('RAGManager forwards providerDataScopes from config and runtime keys', () => {

@@ -20,7 +20,7 @@ export interface ParsedReleaseNotes {
 export class ReleaseNotesManager {
     private static instance: ReleaseNotesManager;
     private cachedNotes: ParsedReleaseNotes | null = null;
-    private readonly repoOwner = "Natively-AI-assistant";
+    private readonly repoOwner = "NeuroMarshal";
     private readonly repoName = "natively-cluely-ai-assistant";
 
     private constructor() { }

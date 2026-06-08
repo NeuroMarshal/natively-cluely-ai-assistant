@@ -20,6 +20,8 @@ export interface RAGManagerConfig {
     openaiKey?: string;
     geminiKey?: string;
     ollamaUrl?: string;
+    /** Selected on-device embedding model id (embeddingModelManager catalog). */
+    localEmbeddingModel?: string;
     providerDataScopes?: ProviderDataScopePolicy;
 }
 
@@ -52,6 +54,7 @@ export class RAGManager {
             openaiKey: config.openaiKey,
             geminiKey: config.geminiKey,
             ollamaUrl: config.ollamaUrl,
+            localEmbeddingModel: config.localEmbeddingModel,
             providerDataScopes: config.providerDataScopes
         }).then(() => {
             // Backfill provider metadata for meetings that were embedded before the
@@ -74,7 +77,7 @@ export class RAGManager {
         return this.embeddingPipeline;
     }
 
-    initializeEmbeddings(keys: { openaiKey?: string, geminiKey?: string, ollamaUrl?: string, providerDataScopes?: ProviderDataScopePolicy }): void {
+    initializeEmbeddings(keys: { openaiKey?: string, geminiKey?: string, ollamaUrl?: string, localEmbeddingModel?: string, providerDataScopes?: ProviderDataScopePolicy }): Promise<void> {
         const initPromise = this.embeddingPipeline.initialize(keys);
         // After init, backfill embedding_provider on meetings that have embedded chunks
         // but a NULL metadata column (common for meetings embedded before this metadata
@@ -89,6 +92,7 @@ export class RAGManager {
             this._backfillEmbeddingProviderMetadata();
             this.scheduleAutoReindex();
         }
+        return initPromise;
     }
 
     private _backfillEmbeddingProviderMetadata(): void {

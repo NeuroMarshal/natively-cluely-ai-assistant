@@ -1800,111 +1800,6 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   });
 
-  // ── Legacy hosted Natively API IPC ─────────────────────────────────────────
-  // The local build keeps these channels as compatibility no-ops for stale
-  // preload/types and older encrypted credentials, but never phones home.
-  safeHandle('set-natively-api-key', async (_, _apiKey: string) => {
-    try {
-      const { CredentialsManager } = require('./services/CredentialsManager');
-      const cm = CredentialsManager.getInstance();
-      const prevSttProvider = cm.getSttProvider();
-      cm.setNativelyApiKey('');
-
-      const llmHelper = appState.processingHelper.getLLMHelper();
-      llmHelper.setNativelyKey(null);
-
-      const defaultModel = cm.getDefaultModel();
-      const providers = [...(cm.getCurlProviders() || []), ...(cm.getCustomProviders() || [])];
-      llmHelper.setModel(defaultModel, providers);
-      appState.broadcast('model-changed', defaultModel);
-
-      const newSttProvider = cm.getSttProvider();
-      if (newSttProvider !== prevSttProvider) {
-        console.log(
-          `[IPC] set-natively-api-key: legacy STT provider changed ${prevSttProvider} → ${newSttProvider}, reconfiguring pipeline`,
-        );
-        await appState.reconfigureSttProvider();
-      }
-
-      BrowserWindow.getAllWindows().forEach((win) => {
-        if (!win.isDestroyed()) win.webContents.send('credentials-changed');
-      });
-
-      return { success: true };
-    } catch (error: any) {
-      console.error('Error clearing legacy Natively API key:', error);
-      return { success: false, error: error.message };
-    }
-  });
-
-  safeHandle('get-natively-pricing', async () => {
-    return { ok: false, error: 'natively_api_disabled_local_build' };
-  });
-
-  safeHandle('get-natively-usage', async () => {
-    return { ok: false, error: 'natively_api_disabled_local_build' };
-  });
-
-  safeHandle('invalidate-natively-usage-cache', () => {
-    return { ok: true };
-  });
-
-  // ── Legacy Trial IPC ─────────────────────────────────────────────────────────
-  // Trials are disabled in the local-first fork. These handlers remain as
-  // compatibility no-ops for older renderer/preload builds and stale local state.
-  safeHandle('trial:start', async () => {
-    return { ok: false, hasToken: false, error: 'trial_disabled_local_build' };
-  });
-
-  safeHandle('trial:status', async () => {
-    return { ok: false, expired: false, error: 'trial_disabled_local_build' };
-  });
-
-  safeHandle('trial:get-local', async () => {
-    try {
-      const { CredentialsManager } = require('./services/CredentialsManager');
-      const cm = CredentialsManager.getInstance();
-      if (cm.getTrialToken()) cm.clearTrialToken();
-      if (cm.getNativelyApiKey?.() === TRIAL_SENTINEL_KEY) cm.setNativelyApiKey('');
-      return { hasToken: false, trialClaimed: false, expired: false };
-    } catch {
-      return { hasToken: false, trialClaimed: false };
-    }
-  });
-
-  safeHandle('trial:convert', async (_, _choice: string) => {
-    return { ok: true };
-  });
-
-  safeHandle('trial:end-byok', async () => {
-    try {
-      const { CredentialsManager } = require('./services/CredentialsManager');
-      const cm = CredentialsManager.getInstance();
-      cm.clearTrialToken();
-      if (cm.getNativelyApiKey?.() === TRIAL_SENTINEL_KEY) {
-        cm.setNativelyApiKey('');
-        const llmHelper = appState.processingHelper?.getLLMHelper?.();
-        if (llmHelper) llmHelper.setNativelyKey(null);
-        await appState.reconfigureSttProvider();
-      }
-      BrowserWindow.getAllWindows().forEach((win) => {
-        if (!win.isDestroyed()) {
-          win.webContents.send('license-status-changed', { isPremium: true });
-          win.webContents.send('trial-ended', { choice: 'byok' });
-        }
-      });
-
-      return { success: true };
-    } catch (error: any) {
-      console.error('[IPC] trial:end-byok error:', error);
-      return { success: false, error: error.message };
-    }
-  });
-
-  safeHandle('trial:wipe-profile-data', async () => {
-    return { success: true };
-  });
-
   // Custom Provider Handlers
   safeHandle('get-custom-providers', async () => {
     try {
@@ -2783,6 +2678,154 @@ export function initializeIpcHandlers(appState: AppState): void {
     return detectHardware();
   });
 
+  // ==========================================
+  // Local Embedding Model Handlers
+  // ==========================================
+  // Multilingual embedding models for semantic search over the local knowledge
+  // DB. Downloaded DIRECTLY via transformers.js (like local Whisper) into
+  // userData/embedding-models — never pulled through Ollama, so they stay fully
+  // internal to RAG and never appear in the chat ("active") model selector.
+
+  const activeEmbeddingDownloads = new Set<string>();
+
+  // Apply a model selection at runtime: re-init the pipeline (loads the new model
+  // → new embedding space) and re-embed both meetings (scheduleAutoReindex inside
+  // initializeEmbeddings) and the knowledge-DB nodes (ensureEmbeddingSpace).
+  const applyEmbeddingModel = async (modelId: string) => {
+    const ragManager = appState.getRAGManager();
+    if (!ragManager) return;
+    await ragManager.initializeEmbeddings({ localEmbeddingModel: modelId });
+    const orchestrator = appState.getKnowledgeOrchestrator?.();
+    if (orchestrator && typeof orchestrator.ensureEmbeddingSpace === 'function') {
+      await orchestrator.ensureEmbeddingSpace();
+    }
+  };
+
+  safeHandle('embedding-model-get-models', async () => {
+    try {
+      const { getAvailableEmbeddingModels, resolveActiveEmbeddingModelId } = require('./rag/embeddingModelManager');
+      const models = getAvailableEmbeddingModels();
+      // Report the model that is ACTUALLY active (the selection if downloaded,
+      // otherwise the bundled fallback) so the "Active" badge is truthful.
+      const setting = SettingsManager.getInstance().get('localEmbeddingModel');
+      const activeModelId = resolveActiveEmbeddingModelId(setting);
+      return { models, activeModelId, selectedModelId: setting || null };
+    } catch (e: any) {
+      console.error('[IPC] embedding-model-get-models error:', e.message);
+      return { models: [], activeModelId: '' };
+    }
+  });
+
+  safeHandle('embedding-model-set-model', async (_, modelId: string) => {
+    try {
+      const {
+        getEmbeddingModelEntry,
+        isEmbeddingModelCached,
+      } = require('./rag/embeddingModelManager');
+      if (!getEmbeddingModelEntry(modelId)) {
+        return { success: false, error: 'unknown-model' };
+      }
+      if (!isEmbeddingModelCached(modelId)) {
+        return { success: false, error: 'model-not-installed' };
+      }
+      SettingsManager.getInstance().set('localEmbeddingModel', modelId);
+      await applyEmbeddingModel(modelId);
+      BrowserWindow.getAllWindows().forEach((win) => {
+        if (!win.isDestroyed()) win.webContents.send('embedding-model-changed', modelId);
+      });
+      return { success: true };
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  });
+
+  safeHandle('embedding-model-delete-model', async (_, modelId: string) => {
+    try {
+      const {
+        deleteEmbeddingModel,
+        getEmbeddingModelEntry,
+        resolveActiveEmbeddingModelId,
+      } = require('./rag/embeddingModelManager');
+      const entry = getEmbeddingModelEntry(modelId);
+      if (!entry) return { success: false, error: 'unknown-model' };
+      if (entry.bundled) return { success: false, error: 'bundled-model' };
+      const setting = SettingsManager.getInstance().get('localEmbeddingModel');
+      if (resolveActiveEmbeddingModelId(setting) === modelId) {
+        return { success: false, error: 'active-model' };
+      }
+      deleteEmbeddingModel(modelId);
+      return { success: true };
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  });
+
+  safeHandle('embedding-model-start-download', async (event, modelId: string) => {
+    if (activeEmbeddingDownloads.has(modelId)) {
+      return { success: false, error: 'already-downloading' };
+    }
+    const {
+      getEmbeddingModelEntry,
+      getEmbeddingModelsDir,
+      isEmbeddingModelCached,
+    } = require('./rag/embeddingModelManager');
+    const modelEntry = getEmbeddingModelEntry(modelId);
+    if (!modelEntry) {
+      return { success: false, error: 'unknown-model' };
+    }
+    if (isEmbeddingModelCached(modelId)) {
+      return { success: true };
+    }
+    activeEmbeddingDownloads.add(modelId);
+    const sender = event.sender;
+    try {
+      const { Worker } = require('worker_threads');
+      const workerPath = require('path').join(__dirname, 'rag', 'embeddingDownloadWorker.js');
+      const worker = new Worker(workerPath);
+      let settled = false;
+      const finish = async (error?: string): Promise<void> => {
+        if (settled) return;
+        settled = true;
+        activeEmbeddingDownloads.delete(modelId);
+        if (error) {
+          if (!sender.isDestroyed()) sender.send('embedding-model-download-error', { modelId, error });
+        } else if (!isEmbeddingModelCached(modelId)) {
+          if (!sender.isDestroyed()) {
+            sender.send('embedding-model-download-error', {
+              modelId,
+              error: `Downloaded files for "${modelEntry.name}" are incomplete.`,
+            });
+          }
+        } else {
+          const selected = SettingsManager.getInstance().get('localEmbeddingModel');
+          if (selected === modelId) await applyEmbeddingModel(modelId);
+          if (!sender.isDestroyed()) sender.send('embedding-model-download-complete', { modelId });
+        }
+        await worker.terminate();
+      };
+      worker.on('message', (msg: any) => {
+        if (msg.type === 'progress' && !sender.isDestroyed()) {
+          sender.send('embedding-model-download-progress', { modelId, progress: msg.progress });
+        } else if (msg.type === 'ready') {
+          void finish();
+        } else if (msg.type === 'error') {
+          void finish(msg.message || 'Download failed');
+        }
+      });
+      worker.on('error', (error: Error) => {
+        void finish(error.message);
+      });
+      worker.on('exit', (code: number) => {
+        if (!settled && code !== 0) void finish(`Download worker exited with code ${code}`);
+      });
+      worker.postMessage({ modelId, cacheDir: getEmbeddingModelsDir() });
+      return { success: true };
+    } catch (e: any) {
+      activeEmbeddingDownloads.delete(modelId);
+      return { success: false, error: e?.message || 'Download failed' };
+    }
+  });
+
   safeHandle(
     'test-llm-connection',
     async (_, provider: 'gemini' | 'groq' | 'openai' | 'claude' | 'deepseek', apiKey?: string) => {
@@ -3000,7 +3043,7 @@ export function initializeIpcHandlers(appState: AppState): void {
 
       llmHelper.setModel(modelId, allProviders);
 
-      appState.broadcast('model-changed', modelId);
+      appState.sendModelChanged(modelId);
 
       // Close the selector window if open
       appState.modelSelectorWindowHelper.hideWindow();
@@ -3026,7 +3069,7 @@ export function initializeIpcHandlers(appState: AppState): void {
       const allProviders = [...curlProviders, ...legacyProviders];
       llmHelper.setModel(modelId, allProviders);
 
-      appState.broadcast('model-changed', modelId);
+      appState.sendModelChanged(modelId);
 
       // Close the selector window if open
       appState.modelSelectorWindowHelper.hideWindow();

@@ -527,7 +527,6 @@ export class AppState {
   private _disguiseTimers: NodeJS.Timeout[] = []; // Track forceUpdate timeouts
   private _dockDebounceTimer: NodeJS.Timeout | null = null; // Debounce dock state changes
   private _dockReassertTimers: NodeJS.Timeout[] = []; // Self-verifying dock-enforcement retry timers
-  private _ollamaBootstrapPromise: Promise<void> | null = null;
   private screenshotCaptureInProgress: boolean = false;
 
 
@@ -838,12 +837,10 @@ export class AppState {
       } catch (_) {}
     }
 
-    // Initialize RAGManager (requires database to be ready)
+    // Initialize RAGManager (requires database to be ready). Embeddings are
+    // on-device only (downloaded transformers.js models) — there is no Ollama
+    // embedding model to pull anymore.
     this.initializeRAGManager()
-
-    // Check and prep Ollama embedding model
-    this.bootstrapOllamaEmbeddings()
-
 
     this.setupIntelligenceEvents()
 
@@ -891,6 +888,16 @@ export class AppState {
     sendOnce(this.windowHelper.getLauncherWindow());
   }
 
+  public sendModelChanged(modelId: string): void {
+    const sent = new Set<number>();
+    const sendOnce = (win: BrowserWindow | null | undefined) => {
+      if (!win || sent.has(win.id)) return;
+      if (this.sendToWindow(win, 'model-changed', modelId)) sent.add(win.id);
+    };
+    sendOnce(this.windowHelper.getOverlayWindow());
+    sendOnce(this.modelSelectorWindowHelper.getWindow());
+  }
+
   private sendSttStatus(payload: any): void {
     this.sendToMeetingSurfaces('stt-status', payload);
   }
@@ -928,39 +935,6 @@ export class AppState {
     this.broadcast('meeting-state-changed', { isActive: this.isMeetingActive });
   }
 
-  private async bootstrapOllamaEmbeddings() {
-    this._ollamaBootstrapPromise = (async () => {
-      try {
-        const { OllamaBootstrap } = require('./rag/OllamaBootstrap');
-        const bootstrap = new OllamaBootstrap();
-
-        // Fire and forget — don't await this before showing the window
-        const result = await bootstrap.bootstrap('nomic-embed-text', (status: string, percent: number) => {
-          // Send progress to renderer via IPC
-          this.broadcast('ollama:pull-progress', { status, percent });
-        });
-
-        if (result === 'pulled' || result === 'already_pulled') {
-          this.broadcast('ollama:pull-complete');
-          // Re-resolve the embedding provider given that Ollama might now be available
-          if (this.ragManager) {
-             console.log('[AppState] Ollama model ready, re-evaluating RAG pipeline provider');
-             const { CredentialsManager } = require('./services/CredentialsManager');
-             const cm = CredentialsManager.getInstance();
-             this.ragManager.initializeEmbeddings({
-                openaiKey: cm.getOpenaiApiKey() || process.env.OPENAI_API_KEY || undefined,
-                geminiKey: cm.getGeminiApiKey() || process.env.GOOGLE_API_KEY || process.env.GEMINI_API_KEY || undefined,
-                ollamaUrl: process.env.OLLAMA_URL || "http://localhost:11434",
-                providerDataScopes: (() => { try { const { SettingsManager } = require('./services/SettingsManager'); return SettingsManager.getInstance().get('providerDataScopes'); } catch { return undefined; } })()
-             });
-          }
-        }
-      } catch (err) {
-         console.error('[AppState] Failed to bootstrap Ollama:', err);
-      }
-    })();
-  }
-
   private initializeRAGManager(): void {
     try {
       const db = DatabaseManager.getInstance();
@@ -973,6 +947,7 @@ export class AppState {
         const geminiKey = cm.getGeminiApiKey() || process.env.GOOGLE_API_KEY || process.env.GEMINI_API_KEY;
 
         const providerDataScopes = (() => { try { const { SettingsManager } = require('./services/SettingsManager'); return SettingsManager.getInstance().get('providerDataScopes'); } catch { return undefined; } })();
+        const localEmbeddingModel = (() => { try { const { SettingsManager } = require('./services/SettingsManager'); return SettingsManager.getInstance().get('localEmbeddingModel'); } catch { return undefined; } })();
         this.ragManager = new RAGManager({
             db: sqliteDb,
             dbPath: db.getDbPath(),
@@ -980,6 +955,7 @@ export class AppState {
             openaiKey,
             geminiKey,
             ollamaUrl: process.env.OLLAMA_URL || 'http://localhost:11434',
+            localEmbeddingModel,
             providerDataScopes
         });
         this.ragManager.setLLMHelper(this.processingHelper.getLLMHelper());
@@ -1466,10 +1442,7 @@ export class AppState {
 
     let stt: STTProvider;
 
-    if (sttProvider === 'natively') {
-      console.warn(`[Main] Legacy hosted STT provider is disabled in this local build, falling back to GoogleSTT`);
-      stt = new GoogleSTT(speaker);
-    } else if (sttProvider === 'deepgram') {
+    if (sttProvider === 'deepgram') {
       const apiKey = CredentialsManager.getInstance().getDeepgramApiKey();
       if (apiKey) {
         console.log(`[Main] Using DeepgramStreamingSTT for ${speaker}`);
@@ -2860,17 +2833,13 @@ export class AppState {
   /**
    * Serialization mutex for reconfigureSttProvider.
    *
-   * Crash/hang fix (2026-06-05): a single "save Natively API key" action can
-   * fire up to TWO reconfigure calls back-to-back — one from the
-   * `set-natively-api-key` handler (which auto-promotes the STT provider to
-   * 'natively' and reconfigures), and one from the renderer's follow-up
-   * `set-stt-provider('natively')` call. Each call tears down and rebuilds the
-   * native captures (SystemAudioCapture / MicrophoneCapture → CoreAudio /
+   * Crash/hang fix (2026-06-05): settings changes can fire multiple STT
+   * reconfigure calls back-to-back. Each call tears down and rebuilds the native
+   * captures (SystemAudioCapture / MicrophoneCapture → CoreAudio /
    * ScreenCaptureKit / WASAPI). Two interleaved teardown+construct sequences
    * against the same native device handles is a native-resource race that
-   * deadlocks the OS audio stack or crashes the process — manifesting as the
-   * "app hangs / freezes the system right after entering the key" reports on
-   * BOTH macOS and Windows (the bug is in this cross-platform JS orchestration,
+   * deadlocks the OS audio stack or crashes the process — the bug is in this
+   * cross-platform JS orchestration,
    * not in any OS-specific native code).
    *
    * Every other capture-mutating flow in this class is already guarded
@@ -4032,9 +4001,7 @@ export class AppState {
           const all = [...(cm.getCurlProviders() || []), ...(cm.getCustomProviders() || [])];
           console.log(`[Main] Reverting model to default: ${defaultModel}`);
           this.processingHelper.getLLMHelper().setModel(defaultModel, all);
-          BrowserWindow.getAllWindows().forEach(win => {
-            if (!win.isDestroyed()) win.webContents.send('model-changed', defaultModel);
-          });
+          this.sendModelChanged(defaultModel);
         } catch (e) {
           console.error('[Main] Failed to revert model:', e);
         }
@@ -5372,11 +5339,6 @@ async function initializeApp() {
 
   // NOTE: CredentialsManager.init() and loadStoredCredentials() are already called
   // above before this block — do NOT call them again here to avoid double key-load.
-
-  // Anonymous install ping - one-time, non-blocking
-  // See electron/services/InstallPingManager.ts for privacy details
-  const { sendAnonymousInstallPing } = require('./services/InstallPingManager');
-  sendAnonymousInstallPing();
 
   // Load stored Google Service Account path (for Speech-to-Text)
   // Fall back to GOOGLE_APPLICATION_CREDENTIALS env var (set in terminal but not Spotlight)

@@ -3,64 +3,82 @@ import path from 'path';
 import { app } from 'electron';
 import { IEmbeddingProvider } from './IEmbeddingProvider';
 import { embeddingSpaceKey } from '../embeddingSpace';
+import {
+  BUNDLED_EMBEDDING_MODEL_ID,
+  DEFAULT_EMBEDDING_MODEL_ID,
+  getEmbeddingModelEntry,
+  getEmbeddingModelsDir,
+  isEmbeddingModelCached,
+  type EmbeddingModelInfo,
+} from '../embeddingModelManager';
 
+/**
+ * On-device embedding provider backed by a transformers.js feature-extraction
+ * model. The model is selectable (see embeddingModelManager): the bundled
+ * MiniLM ships in resources for an offline guarantee, while multilingual models
+ * are downloaded into userData/embedding-models. Asymmetric models (e5 family)
+ * apply query/passage prefixes; pooling + dimensionality come from the catalog.
+ */
 export class LocalEmbeddingProvider implements IEmbeddingProvider {
   readonly name = 'local';
-  readonly dimensions = 384; // all-MiniLM-L6-v2
-  readonly model = 'Xenova/all-MiniLM-L6-v2';
+  readonly model: string;
+  readonly dimensions: number;
   readonly space: string;
 
+  private readonly entry: EmbeddingModelInfo;
+  private readonly bundled: boolean;
   private pipe: any = null;
   private loadingPromise: Promise<void> | null = null; // prevents concurrent init races
-  private modelPath: string;
+  private bundledModelsRoot: string;
 
-  constructor() {
+  constructor(modelId: string = DEFAULT_EMBEDDING_MODEL_ID) {
+    // Resolve to the requested model when its weights exist; otherwise fall back
+    // to the bundled model so embeddings always work (download pending/failed).
+    const resolvedId = isEmbeddingModelCached(modelId) ? modelId : BUNDLED_EMBEDDING_MODEL_ID;
+    this.entry = getEmbeddingModelEntry(resolvedId)
+      ?? getEmbeddingModelEntry(BUNDLED_EMBEDDING_MODEL_ID)!;
+    this.model = this.entry.id;
+    this.dimensions = this.entry.dimensions;
+    this.bundled = !!this.entry.bundled;
     this.space = embeddingSpaceKey({ name: this.name, model: this.model, dimensions: this.dimensions });
-    // Point to the bundled model inside the app's resources.
-    // In dev: use app.getAppPath() so the path is independent of how esbuild
-    // bundles this file (bundle: true inlines the provider into main.js, which
-    // makes __dirname-relative paths fragile).
-    // In prod: app.isPackaged = true → use process.resourcesPath (electron-builder extraResources).
-    this.modelPath = path.join(
+
+    // In dev: app.getAppPath()/resources; in prod: process.resourcesPath.
+    this.bundledModelsRoot = path.join(
       app.isPackaged ? process.resourcesPath : path.join(app.getAppPath(), 'resources'),
-      'models'
+      'models',
     );
   }
 
   async isAvailable(): Promise<boolean> {
-    // Local model is ALWAYS available after install — this is the guarantee
     try {
       await this.ensureLoaded();
       return true;
     } catch (e) {
-      console.error('[LocalEmbeddingProvider] Model failed to load:', e);
+      console.error(`[LocalEmbeddingProvider] Model failed to load (${this.model}):`, e);
       return false;
     }
   }
 
   private async ensureLoaded(): Promise<void> {
     if (this.pipe) return;
-
-    // If another caller already kicked off loading, wait for that same promise
-    // rather than launching a second concurrent pipeline() call.
     if (this.loadingPromise) {
       await this.loadingPromise;
       return;
     }
 
     this.loadingPromise = (async () => {
-      // Use new Function() to force a true ESM dynamic import at runtime.
-      // TypeScript with module:commonjs rewrites `await import(...)` to
-      // `Promise.resolve().then(() => require(...))`, which fails for ESM-only
-      // packages like @huggingface/transformers. The new Function() trick is opaque
-      // to the TypeScript compiler so it is left as a real import() call.
+      // new Function() forces a real ESM import() at runtime (TS would otherwise
+      // rewrite it to require(), which fails for this ESM-only package).
       const { pipeline, env } = await (new Function('return import("@huggingface/transformers")')()) as any;
 
-      // Tell transformers.js to use the local path, never download in production
+      // Never reach out to the network at inference time. Downloads are an
+      // explicit, separate step (embedding-model-start-download IPC). Both bundled
+      // and downloaded models are read as LOCAL models (localModelPath + flat
+      // `<root>/<org>/<name>` layout) so loading stays fully offline.
       env.allowRemoteModels = false;
-      env.localModelPath = this.modelPath;
+      env.localModelPath = this.bundled ? this.bundledModelsRoot : getEmbeddingModelsDir();
 
-      this.pipe = await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2', {
+      this.pipe = await pipeline('feature-extraction', this.model, {
         local_files_only: true,
       });
     })();
@@ -68,30 +86,33 @@ export class LocalEmbeddingProvider implements IEmbeddingProvider {
     try {
       await this.loadingPromise;
     } catch (e) {
-      // Reset so a future call can retry
-      this.loadingPromise = null;
+      this.loadingPromise = null; // allow retry
       throw e;
     }
   }
 
-  async embed(text: string): Promise<number[]> {
+  private async run(text: string): Promise<number[]> {
     await this.ensureLoaded();
-    const output = await this.pipe(text, { pooling: 'mean', normalize: true });
+    const output = await this.pipe(text, { pooling: this.entry.pooling, normalize: true });
     return Array.from(output.data as Float32Array);
   }
 
+  /** Embed a DOCUMENT/passage (applies the passage prefix for asymmetric models). */
+  async embed(text: string): Promise<number[]> {
+    return this.run(this.entry.passagePrefix + text);
+  }
+
+  /** Embed a QUERY (applies the query prefix for asymmetric models). */
   async embedQuery(text: string): Promise<number[]> {
-    return this.embed(text); // all-MiniLM-L6-v2 is symmetric
+    return this.run(this.entry.queryPrefix + text);
   }
 
   async embedBatch(texts: string[]): Promise<number[][]> {
     await this.ensureLoaded();
-    // transformers.js handles batching internally
-    const output = await this.pipe(texts, { pooling: 'mean', normalize: true });
-    // output.data is flat [n * 384], reshape it
-    const batchSize = texts.length;
+    const prefixed = texts.map(t => this.entry.passagePrefix + t);
+    const output = await this.pipe(prefixed, { pooling: this.entry.pooling, normalize: true });
     const result: number[][] = [];
-    for (let i = 0; i < batchSize; i++) {
+    for (let i = 0; i < texts.length; i++) {
       result.push(Array.from(output.data.slice(i * this.dimensions, (i + 1) * this.dimensions)));
     }
     return result;

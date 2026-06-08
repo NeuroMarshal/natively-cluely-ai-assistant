@@ -15,6 +15,7 @@ import { AIProvidersSettings } from './settings/AIProvidersSettings';
 import { PhoneMirrorSettings } from './settings/PhoneMirrorSettings';
 import { SkillsSettings } from './settings/SkillsSettings';
 import { LocalWhisperModelPanel } from './LocalWhisperModelPanel';
+import { LocalEmbeddingModelPanel } from './LocalEmbeddingModelPanel';
 import { NativelyLogoMark } from './NativelyLogoMark';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useShortcuts } from '../hooks/useShortcuts';
@@ -1433,7 +1434,7 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                                                     <h3 className="text-lg font-bold text-text-primary">{isUndetectable ? 'Undetectable' : 'Detectable'}</h3>
                                                 </div>
                                                 <p className="text-xs text-text-secondary">
-                                                    Natively is currently {isUndetectable ? 'undetectable' : 'detectable'} by screen-sharing. <button onClick={() => window.electronAPI?.openExternal?.('https://natively.software/supportedapps')} className="text-blue-400 hover:underline">Supported apps here</button>
+                                                    Natively is currently {isUndetectable ? 'undetectable' : 'detectable'} by screen-sharing. Visibility depends on the OS and meeting app capture behavior.
                                                 </p>
                                             </div>
                                             <div
@@ -2042,7 +2043,10 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                             )}
 
                             {activeTab === 'ai-providers' && (
-                                <AIProvidersSettings />
+                                <div className="space-y-6">
+                                    <AIProvidersSettings />
+                                    <LocalEmbeddingModelPanel />
+                                </div>
                             )}
                             {activeTab === 'skills' && (
                                 <SkillsSettings />

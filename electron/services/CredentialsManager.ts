@@ -41,9 +41,8 @@ export interface StoredCredentials {
     customProviders?: CustomProvider[];
     curlProviders?: CurlProvider[];
     defaultModel?: string;
-    nativelyApiKey?: string;
     // STT Provider settings
-    sttProvider?: 'none' | 'google' | 'groq' | 'openai' | 'deepgram' | 'elevenlabs' | 'azure' | 'ibmwatson' | 'soniox' | 'natively' | 'local-whisper';
+    sttProvider?: 'none' | 'google' | 'groq' | 'openai' | 'deepgram' | 'elevenlabs' | 'azure' | 'ibmwatson' | 'soniox' | 'local-whisper';
     groqSttApiKey?: string;
     groqSttModel?: string;
     openAiSttApiKey?: string;
@@ -67,11 +66,6 @@ export interface StoredCredentials {
     openaiPreferredModel?: string;
     claudePreferredModel?: string;
     deepseekPreferredModel?: string;
-    // Free trial state
-    trialToken?: string;   // server-issued signed token (natively_trial_…)
-    trialExpiresAt?: string;   // ISO timestamp — local copy for startup check
-    trialStartedAt?: string;   // ISO timestamp
-    trialClaimed?: boolean;  // set true on first claim, never cleared — hides start card permanently
 }
 
 export class CredentialsManager {
@@ -130,15 +124,8 @@ export class CredentialsManager {
         return this.credentials.customProviders || [];
     }
 
-    public getSttProvider(): 'none' | 'google' | 'groq' | 'openai' | 'deepgram' | 'elevenlabs' | 'azure' | 'ibmwatson' | 'soniox' | 'natively' | 'local-whisper' {
-        const provider = this.credentials.sttProvider || 'none';
-        if (provider === 'natively') {
-            this.credentials.sttProvider = 'none';
-            this.saveCredentials();
-            console.log('[CredentialsManager] Legacy hosted STT provider disabled in local build; reset to none');
-            return 'none';
-        }
-        return provider;
+    public getSttProvider(): NonNullable<StoredCredentials['sttProvider']> {
+        return this.credentials.sttProvider || 'none';
     }
 
     public getDeepgramApiKey(): string | undefined {
@@ -207,10 +194,6 @@ export class CredentialsManager {
             console.log('[CredentialsManager] Legacy hosted default model disabled in local build; reset to Gemini Flash-Lite');
         }
         return this.credentials.defaultModel || 'gemini-3.1-flash-lite';
-    }
-
-    public getNativelyApiKey(): string | undefined {
-        return undefined;
     }
 
     public getAllCredentials(): StoredCredentials {
@@ -293,7 +276,7 @@ export class CredentialsManager {
         console.log('[CredentialsManager] Google Service Account path updated');
     }
 
-    public setSttProvider(provider: 'none' | 'google' | 'groq' | 'openai' | 'deepgram' | 'elevenlabs' | 'azure' | 'ibmwatson' | 'soniox' | 'natively' | 'local-whisper'): void {
+    public setSttProvider(provider: NonNullable<StoredCredentials['sttProvider']>): void {
         this.credentials.sttProvider = provider;
         this.saveCredentials();
         console.log(`[CredentialsManager] STT Provider set to: ${provider}`);
@@ -392,23 +375,6 @@ export class CredentialsManager {
         console.log(`[CredentialsManager] Default Model set to: ${model}`);
     }
 
-    public setNativelyApiKey(key: string): void {
-        void key;
-        delete this.credentials.nativelyApiKey;
-
-        if (this.credentials.defaultModel === 'natively') {
-            this.credentials.defaultModel = 'gemini-3.1-flash-lite';
-            console.log('[CredentialsManager] Legacy hosted model cleared — reset default model to Gemini Flash-Lite');
-        }
-        if (this.credentials.sttProvider === 'natively') {
-            this.credentials.sttProvider = 'none';
-            console.log('[CredentialsManager] Legacy hosted STT cleared — reset STT provider to none');
-        }
-
-        this.saveCredentials();
-        console.log('[CredentialsManager] Legacy hosted Natively API key ignored in local build');
-    }
-
     public getPreferredModel(provider: 'gemini' | 'groq' | 'openai' | 'claude' | 'deepseek'): string | undefined {
         const key = `${provider}PreferredModel` as keyof StoredCredentials;
         return this.credentials[key] as string | undefined;
@@ -466,41 +432,6 @@ export class CredentialsManager {
         this.credentials.curlProviders = this.credentials.curlProviders.filter(p => p.id !== id);
         this.saveCredentials();
         console.log(`[CredentialsManager] Curl Provider '${id}' deleted`);
-    }
-
-    // ── Free Trial ─────────────────────────────────────────────
-    public getTrialToken(): string | undefined {
-        return this.credentials.trialToken;
-    }
-
-    public getTrialExpiresAt(): string | undefined {
-        return this.credentials.trialExpiresAt;
-    }
-
-    public getTrialStartedAt(): string | undefined {
-        return this.credentials.trialStartedAt;
-    }
-
-    public getTrialClaimed(): boolean {
-        return this.credentials.trialClaimed === true;
-    }
-
-    public setTrialToken(token: string, expiresAt: string, startedAt: string): void {
-        this.credentials.trialToken = token;
-        this.credentials.trialExpiresAt = expiresAt;
-        this.credentials.trialStartedAt = startedAt;
-        this.credentials.trialClaimed = true;
-        this.saveCredentials();
-        console.log('[CredentialsManager] Trial token stored, expires:', expiresAt);
-    }
-
-    public clearTrialToken(): void {
-        delete this.credentials.trialToken;
-        delete this.credentials.trialExpiresAt;
-        delete this.credentials.trialStartedAt;
-        // trialClaimed intentionally NOT cleared — keeps start card hidden after token wipe
-        this.saveCredentials();
-        console.log('[CredentialsManager] Trial token cleared');
     }
 
     public clearAll(): void {
@@ -609,17 +540,31 @@ export class CredentialsManager {
 
     private normalizeLocalForkCredentials(): void {
         let changed = false;
-        if (this.credentials.nativelyApiKey) {
-            delete this.credentials.nativelyApiKey;
+        const legacy = this.credentials as StoredCredentials & {
+            nativelyApiKey?: string;
+            trialToken?: string;
+            trialExpiresAt?: string;
+            trialStartedAt?: string;
+            trialClaimed?: boolean;
+            sttProvider?: StoredCredentials['sttProvider'] | 'natively';
+        };
+        if (legacy.nativelyApiKey) {
+            delete legacy.nativelyApiKey;
             changed = true;
         }
         if (this.credentials.defaultModel === 'natively') {
             this.credentials.defaultModel = 'gemini-3.1-flash-lite';
             changed = true;
         }
-        if (this.credentials.sttProvider === 'natively') {
-            this.credentials.sttProvider = 'none';
+        if ((legacy.sttProvider as string | undefined) === 'natively') {
+            this.credentials.sttProvider = 'local-whisper';
             changed = true;
+        }
+        for (const key of ['trialToken', 'trialExpiresAt', 'trialStartedAt', 'trialClaimed'] as const) {
+            if (key in legacy) {
+                delete legacy[key];
+                changed = true;
+            }
         }
         if (changed) {
             this.saveCredentials();

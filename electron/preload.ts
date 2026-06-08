@@ -65,46 +65,12 @@ interface ElectronAPI {
   setOpenaiApiKey: (apiKey: string) => Promise<{ success: boolean; error?: string }>;
   setClaudeApiKey: (apiKey: string) => Promise<{ success: boolean; error?: string }>;
   setDeepseekApiKey: (apiKey: string) => Promise<{ success: boolean; error?: string }>;
-  setNativelyApiKey: (apiKey: string) => Promise<{ success: boolean; error?: string }>;
-  getNativelyPricing: () => Promise<{
-    ok: boolean;
-    currency?: string;
-    fetchedAt?: string;
-    stale?: boolean;
-    products?: Record<string, {
-      id: string;
-      dodoProductId: string;
-      name: string;
-      amount: number | null;
-      currency: string;
-      formattedPrice: string | null;
-      interval: 'month' | 'year' | 'lifetime';
-      checkoutUrl: string;
-      coupon: { code: string; eligible: boolean; discountPercent: number; reason?: string };
-    }>;
-    error?: string;
-    status?: number;
-  }>;
-  getNativelyUsage: () => Promise<{
-    ok: boolean;
-    plan?: string;
-    quota?: {
-      transcription: { used: number; limit: number; remaining: number };
-      ai: { used: number; limit: number; remaining: number };
-      search: { used: number; limit: number; remaining: number };
-      resets_at: string;
-    };
-    member_since?: string;
-    error?: string;
-    status?: number;
-  }>;
   getStoredCredentials: () => Promise<{
     hasGeminiKey: boolean;
     hasGroqKey: boolean;
     hasOpenaiKey: boolean;
     hasClaudeKey: boolean;
     hasDeepseekKey: boolean;
-    hasNativelyKey: boolean;
     googleServiceAccountPath: string | null;
     sttProvider: string;
     hasSttGroqKey: boolean;
@@ -117,46 +83,6 @@ interface ElectronAPI {
     ibmWatsonRegion: string;
     hasSonioxKey: boolean;
   }>;
-  // Free Trial
-  startTrial: () => Promise<{
-    ok: boolean;
-    hasToken?: boolean;
-    started_at?: string;
-    expires_at?: string;
-    expired?: boolean;
-    already_used?: boolean;
-    converted_to?: string | null;
-    usage?: { ai: number; stt_seconds: number; search: number };
-    limits?: {
-      duration_ms: number;
-      ai_requests: number;
-      stt_minutes: number;
-      search_requests: number;
-    };
-    error?: string;
-    status?: number;
-  }>;
-  getTrialStatus: () => Promise<{
-    ok: boolean;
-    expired?: boolean;
-    remaining_ms?: number;
-    started_at?: string;
-    expires_at?: string;
-    converted_to?: string | null;
-    usage?: { ai: number; stt_seconds: number; search: number };
-    limits?: object;
-    error?: string;
-  }>;
-  getLocalTrial: () => Promise<{
-    hasToken: boolean;
-    trialClaimed?: boolean;
-    expiresAt?: string;
-    startedAt?: string;
-    expired?: boolean;
-  }>;
-  convertTrial: (choice: string) => Promise<{ ok: boolean }>;
-  endTrialByok: () => Promise<{ success: boolean; error?: string }>;
-  onTrialEnded: (cb: (data: { choice: string }) => void) => () => void;
   onModesActiveCleared: (cb: () => void) => () => void;
 
   // STT Provider Management
@@ -198,6 +124,18 @@ interface ElectronAPI {
     recommendation: string;
     recommendedModel: string;
   }>;
+  // Local embedding models (semantic search over the knowledge DB)
+  embeddingModelGetModels: () => Promise<{ models: any[]; activeModelId: string; selectedModelId: string | null }>;
+  embeddingModelSetModel: (modelId: string) => Promise<{ success: boolean; error?: string }>;
+  embeddingModelDeleteModel: (modelId: string) => Promise<{ success: boolean; error?: string }>;
+  embeddingModelStartDownload: (modelId: string) => Promise<{ success: boolean; error?: string }>;
+  onEmbeddingModelDownloadProgress: (
+    callback: (data: { modelId: string; progress: number }) => void,
+  ) => () => void;
+  onEmbeddingModelDownloadComplete: (callback: (data: { modelId: string }) => void) => () => void;
+  onEmbeddingModelDownloadError: (
+    callback: (data: { modelId: string; error: string }) => void,
+  ) => () => void;
   getSttProvider: () => Promise<string>;
   setGroqSttApiKey: (apiKey: string) => Promise<{ success: boolean; error?: string }>;
   setOpenAiSttApiKey: (apiKey: string) => Promise<{ success: boolean; error?: string }>;
@@ -1102,27 +1040,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   setOpenaiApiKey: (apiKey: string) => ipcRenderer.invoke('set-openai-api-key', apiKey),
   setClaudeApiKey: (apiKey: string) => ipcRenderer.invoke('set-claude-api-key', apiKey),
   setDeepseekApiKey: (apiKey: string) => ipcRenderer.invoke('set-deepseek-api-key', apiKey),
-  setNativelyApiKey: (apiKey: string) => ipcRenderer.invoke('set-natively-api-key', apiKey),
-  getNativelyPricing: () => ipcRenderer.invoke('get-natively-pricing'),
-  getNativelyUsage: () => ipcRenderer.invoke('get-natively-usage'),
   getStoredCredentials: () => ipcRenderer.invoke('get-stored-credentials'),
 
   // Permissions
   checkPermissions: () => ipcRenderer.invoke('permissions:check'),
   requestMicPermission: () => ipcRenderer.invoke('permissions:request-mic'),
-
-  // Free Trial
-  startTrial: () => ipcRenderer.invoke('trial:start'),
-  getTrialStatus: () => ipcRenderer.invoke('trial:status'),
-  getLocalTrial: () => ipcRenderer.invoke('trial:get-local'),
-  convertTrial: (choice: string) => ipcRenderer.invoke('trial:convert', choice),
-  endTrialByok: () => ipcRenderer.invoke('trial:end-byok'),
-  wipeTrialProfileData: () => ipcRenderer.invoke('trial:wipe-profile-data'),
-  onTrialEnded: (cb: (data: { choice: string }) => void) => {
-    const sub = (_: any, data: any) => cb(data);
-    ipcRenderer.on('trial-ended', sub);
-    return () => ipcRenderer.removeListener('trial-ended', sub);
-  },
 
   // STT Provider Management
   setSttProvider: (
@@ -1179,6 +1101,29 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   localWhisperPreload: (modelId?: string) => ipcRenderer.invoke('local-whisper-preload', modelId),
   localWhisperGetHardware: () => ipcRenderer.invoke('local-whisper-get-hardware'),
+
+  // Local Embedding Models
+  embeddingModelGetModels: () => ipcRenderer.invoke('embedding-model-get-models'),
+  embeddingModelSetModel: (modelId: string) => ipcRenderer.invoke('embedding-model-set-model', modelId),
+  embeddingModelDeleteModel: (modelId: string) =>
+    ipcRenderer.invoke('embedding-model-delete-model', modelId),
+  embeddingModelStartDownload: (modelId: string) =>
+    ipcRenderer.invoke('embedding-model-start-download', modelId),
+  onEmbeddingModelDownloadProgress: (cb: (data: { modelId: string; progress: number }) => void) => {
+    const listener = (_: any, data: any) => cb(data);
+    ipcRenderer.on('embedding-model-download-progress', listener);
+    return () => ipcRenderer.removeListener('embedding-model-download-progress', listener);
+  },
+  onEmbeddingModelDownloadComplete: (cb: (data: { modelId: string }) => void) => {
+    const listener = (_: any, data: any) => cb(data);
+    ipcRenderer.on('embedding-model-download-complete', listener);
+    return () => ipcRenderer.removeListener('embedding-model-download-complete', listener);
+  },
+  onEmbeddingModelDownloadError: (cb: (data: { modelId: string; error: string }) => void) => {
+    const listener = (_: any, data: any) => cb(data);
+    ipcRenderer.on('embedding-model-download-error', listener);
+    return () => ipcRenderer.removeListener('embedding-model-download-error', listener);
+  },
 
   // STT Config Events (Adapted from public PR #173 — verify premium interaction)
   onSttConfigChanged: (callback: (data: { configured: boolean; provider: string }) => void) => {

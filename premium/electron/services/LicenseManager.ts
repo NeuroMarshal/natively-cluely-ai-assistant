@@ -50,10 +50,8 @@ export class LicenseManager {
   /**
    * License detail object consumed by the renderer / IPC layer.
    *
-   * `provider` is intentionally NOT 'natively_api': clearing the Natively API
-   * key (ipcHandlers `set-natively-api-key` clear branch) only deactivates when
-   * the provider is 'natively_api', and we never want clearing an unrelated key
-   * to drop the user's (permanent, free) entitlement.
+   * `provider` intentionally identifies the local fork entitlement. There is no
+   * external account or API key that can revoke it.
    */
   getLicenseDetails(): LicenseDetails {
     return { isPremium: true, plan: 'ultra', provider: 'open_source' };
@@ -64,7 +62,7 @@ export class LicenseManager {
     return { success: true };
   }
 
-  /** Setting a Natively API key never changes entitlement here. */
+  /** Provider API keys never change entitlement here. */
   async activateWithApiKey(_apiKey: string): Promise<ActivationResult> {
     return { success: true };
   }

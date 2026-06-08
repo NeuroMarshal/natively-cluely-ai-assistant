@@ -1,17 +1,11 @@
-// Regression test for the "app hangs / crashes the system right after entering
-// the legacy Natively API key/license" bug (2026-06-05).
+// Regression test for STT reconfiguration serialization.
 //
-// ROOT CAUSE: saving a Natively API key fired up to TWO audio-pipeline rebuilds
-// nearly simultaneously:
-//   1. main-process `set-natively-api-key` handler auto-promotes the STT
-//      provider to 'natively' and calls `reconfigureSttProvider()`.
-//   2. the renderer's `handleSave` then ALSO fired `setSttProvider('natively')`,
-//      whose handler calls `reconfigureSttProvider()` a second time.
-// `reconfigureSttProvider` tears down and reconstructs the native captures
-// (SystemAudioCapture / MicrophoneCapture → CoreAudio / ScreenCaptureKit /
-// WASAPI). Two interleaved teardown+construct sequences against the same native
-// device handles raced → native deadlock / process crash on BOTH macOS and
-// Windows.
+// ROOT CAUSE: settings flows can fire multiple audio-pipeline rebuilds nearly
+// simultaneously. `reconfigureSttProvider` tears down and reconstructs the native
+// captures (SystemAudioCapture / MicrophoneCapture → CoreAudio /
+// ScreenCaptureKit / WASAPI). Two interleaved teardown+construct sequences
+// against the same native device handles raced → native deadlock / process crash
+// on BOTH macOS and Windows.
 //
 // FIXES UNDER TEST:
 //   #1 reconfigureSttProvider is serialized via `_sttReconfigureChain` — the
@@ -167,39 +161,7 @@ describe('Fix #2: renderer no longer double-fires; server compensates the UI ref
     );
   });
 
-  it("set-natively-api-key broadcasts 'credentials-changed' so the SettingsOverlay STT dropdown refreshes", () => {
-    // The SettingsOverlay STT dropdown re-reads credentials ONLY on the
-    // 'credentials-changed' event. Removing the renderer's setSttProvider call
-    // (above) deleted the transitive source of that event for this flow, so the
-    // handler must now emit it directly — otherwise the dropdown shows a stale
-    // provider after a key save/clear.
-    const start = ipcSrc.indexOf("safeHandle('set-natively-api-key'");
-    assert.ok(start >= 0, 'set-natively-api-key handler must exist');
-    const end = ipcSrc.indexOf("safeHandle('get-natively-pricing'", start);
-    const handlerBody = ipcSrc.slice(start, end > start ? end : start + 4000);
-    assert.match(
-      handlerBody,
-      /send\(\s*['"]credentials-changed['"]\s*\)/,
-      "BUG: set-natively-api-key no longer broadcasts 'credentials-changed'. The Settings STT " +
-        'dropdown will show a stale provider after the Natively key is saved or cleared.',
-    );
-  });
-});
-
-describe('Fix #3: legacy license activation is not part of the key-save path', () => {
-  it('set-natively-api-key does not mutate license state', () => {
-    const start = ipcSrc.indexOf("safeHandle('set-natively-api-key'");
-    assert.ok(start >= 0, 'set-natively-api-key handler must exist');
-    const end = ipcSrc.indexOf("safeHandle('get-natively-pricing'", start);
-    const handlerBody = ipcSrc.slice(start, end > start ? end : start + 4000);
-
-    assert.ok(
-      !/activateWithApiKey|LicenseManager|getLicenseDetails|deactivate\(\)/.test(handlerBody),
-      'BUG: set-natively-api-key must not activate/deactivate legacy license state in the local-first fork.',
-    );
-    assert.ok(
-      !/void\s*\(async\s*\(\s*\)\s*=>/.test(handlerBody),
-      'BUG: set-natively-api-key should not hide background side effects in a fire-and-forget IIFE.',
-    );
+  it('hosted Natively API key IPC is fully removed', () => {
+    assert.ok(!/set-natively-api-key|get-natively-pricing|get-natively-usage/.test(ipcSrc));
   });
 });

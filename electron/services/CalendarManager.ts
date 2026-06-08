@@ -3,19 +3,21 @@ import http from 'http';
 import url from 'url';
 import fs from 'fs';
 import path from 'path';
+import crypto from 'crypto';
 import { EventEmitter } from 'events';
 
-// Configuration
-// GOOGLE_CLIENT_SECRET is intentionally NOT referenced here — the desktop app
-// only needs the (non-secret) client ID to construct the auth URL. Token
-// exchange and refresh are proxied through natively-api, which holds the secret.
+// Configuration — direct Google OAuth (no hosted proxy).
+// Installed-app flow: loopback redirect + PKCE. Bring your own OAuth client via
+// env. GOOGLE_CLIENT_ID is required. GOOGLE_CLIENT_SECRET is required for Google
+// "Desktop app" client types (Google still expects it on the token request — for
+// installed apps it is NOT treated as confidential) and may be omitted for client
+// types that accept PKCE alone.
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || "YOUR_CLIENT_ID_HERE";
+const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || "";
 const REDIRECT_URI = "http://localhost:11111/auth/callback";
 const SCOPES = ["https://www.googleapis.com/auth/calendar.readonly"];
 const TOKEN_PATH = path.join(app.getPath('userData'), 'calendar_tokens.enc');
-// Base URL for the natively-api proxy. Override with NATIVELY_API_URL for local dev
-// (e.g. http://localhost:3000). Trailing slash is stripped to keep route concat clean.
-const NATIVELY_API_URL = (process.env.NATIVELY_API_URL || 'https://api.natively.software').replace(/\/+$/, '');
+const GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token';
 
 if (GOOGLE_CLIENT_ID === "YOUR_CLIENT_ID_HERE") {
     console.warn('[CalendarManager] GOOGLE_CLIENT_ID is using the default placeholder. Calendar features will not work until a valid client ID is provided via env var or build config.');
@@ -45,6 +47,8 @@ export class CalendarManager extends EventEmitter {
     private expiryDate: number | null = null;
     private isConnected: boolean = false;
     private updateInterval: NodeJS.Timeout | null = null;
+    private authCodeVerifier: string | null = null;
+    private authState: string | null = null;
 
     private constructor() {
         super();
@@ -74,6 +78,9 @@ export class CalendarManager extends EventEmitter {
             throw new Error('GOOGLE_CLIENT_ID is not configured. Set it in .env and restart the app.');
         }
 
+        this.authCodeVerifier = crypto.randomBytes(32).toString('base64url');
+        this.authState = crypto.randomBytes(24).toString('base64url');
+
         return new Promise((resolve, reject) => {
             let settled = false;
             const finish = (fn: () => void) => {
@@ -91,10 +98,17 @@ export class CalendarManager extends EventEmitter {
                         const qs = new url.URL(req.url, 'http://localhost:11111').searchParams;
                         const code = qs.get('code');
                         const error = qs.get('error');
+                        const state = qs.get('state');
 
                         if (error) {
                             res.end('Authentication failed! You can close this window.');
                             finish(() => reject(new Error(error)));
+                            return;
+                        }
+
+                        if (!state || state !== this.authState) {
+                            res.end('Authentication failed! You can close this window.');
+                            finish(() => reject(new Error('Calendar OAuth state mismatch')));
                             return;
                         }
 
@@ -152,27 +166,43 @@ export class CalendarManager extends EventEmitter {
     }
 
     private getAuthUrl(): string {
+        if (!this.authCodeVerifier || !this.authState) {
+            throw new Error('Calendar OAuth flow was not initialized');
+        }
+        const codeChallenge = crypto
+            .createHash('sha256')
+            .update(this.authCodeVerifier)
+            .digest('base64url');
         const params = new URLSearchParams({
             client_id: GOOGLE_CLIENT_ID,
             redirect_uri: REDIRECT_URI,
             response_type: 'code',
             scope: SCOPES.join(' '),
             access_type: 'offline', // For refresh token
-            prompt: 'consent' // Force prompts to ensure we get refresh token
+            prompt: 'consent', // Force prompts to ensure we get refresh token
+            code_challenge: codeChallenge,
+            code_challenge_method: 'S256',
+            state: this.authState,
         });
         return `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`;
     }
 
     private async exchangeCodeForToken(code: string) {
         try {
-            // Proxied through natively-api so GOOGLE_CLIENT_SECRET never ships in the desktop app.
-            // Fetch (vs. axios) so this call shares the global keep-alive pool with every other
-            // request to api.natively.software and exposes the same error shape (res.ok / res.status)
-            // as the rest of the codebase.
-            const response = await fetch(`${NATIVELY_API_URL}/api/calendar/exchange`, {
+            if (!this.authCodeVerifier) throw new Error('Calendar OAuth verifier is missing');
+            const params = new URLSearchParams({
+                client_id: GOOGLE_CLIENT_ID,
+                code,
+                code_verifier: this.authCodeVerifier,
+                grant_type: 'authorization_code',
+                redirect_uri: REDIRECT_URI,
+            });
+            if (GOOGLE_CLIENT_SECRET) params.set('client_secret', GOOGLE_CLIENT_SECRET);
+
+            const response = await fetch(GOOGLE_TOKEN_URL, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ code, redirect_uri: REDIRECT_URI }),
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: params,
                 signal: AbortSignal.timeout(15_000),
             });
 
@@ -186,6 +216,9 @@ export class CalendarManager extends EventEmitter {
         } catch (error) {
             console.error('[CalendarManager] Token exchange failed:', error);
             throw error;
+        } finally {
+            this.authCodeVerifier = null;
+            this.authState = null;
         }
     }
 
@@ -235,11 +268,17 @@ export class CalendarManager extends EventEmitter {
         }
 
         try {
-            // Proxied through natively-api so GOOGLE_CLIENT_SECRET never ships in the desktop app.
-            const response = await fetch(`${NATIVELY_API_URL}/api/calendar/refresh`, {
+            const params = new URLSearchParams({
+                client_id: GOOGLE_CLIENT_ID,
+                refresh_token: this.refreshToken,
+                grant_type: 'refresh_token',
+            });
+            if (GOOGLE_CLIENT_SECRET) params.set('client_secret', GOOGLE_CLIENT_SECRET);
+
+            const response = await fetch(GOOGLE_TOKEN_URL, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ refresh_token: this.refreshToken }),
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: params,
                 signal: AbortSignal.timeout(15_000),
             });
 

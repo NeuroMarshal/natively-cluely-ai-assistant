@@ -20,7 +20,7 @@ import {
   TINY_ASSIST_PROMPT, TINY_BRAINSTORM_PROMPT, TINY_CLARIFY_PROMPT, TINY_CODE_HINT_PROMPT,
   TINY_PROMPTS_SET
 } from "./llm/tinyPrompts"
-import { getModelCapabilities, selectPromptTier, estimateTokens, truncateTranscriptToFit, getOpenAiMaxOutput, type PromptTier, type ModelCapabilities } from "./llm/modelCapabilities"
+import { getModelCapabilities, selectPromptTier, estimateTokens, truncateTranscriptToFit, getOpenAiMaxOutput, isEmbeddingModel, type PromptTier, type ModelCapabilities } from "./llm/modelCapabilities"
 import { GeminiPromptCache } from "./llm/GeminiPromptCache"
 import {
   runStreamingVisionFallback,
@@ -51,14 +51,12 @@ import type { TranscriptTurn } from "./llm/transcriptCleaner"
 import { deepVariableReplacer, getByPath, injectImageIntoMessages } from './utils/curlUtils';
 import curl2Json from "@bany/curl-to-json";
 import { CustomProvider, CurlProvider } from './services/CredentialsManager';
-import { TRIAL_SENTINEL_KEY } from './config/constants';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import axios from 'axios';
 import { createProviderRateLimiters, RateLimiter } from './services/RateLimiter';
 import { CodexCliConfig, CodexCliService, DEFAULT_CODEX_CLI_CONFIG } from './services/CodexCliService';
 const execAsync = promisify(exec);
-const NATIVELY_API_URL = (process.env.NATIVELY_API_URL || 'https://api.natively.software').replace(/\/+$/, '');
 
 interface OllamaResponse {
   response: string
@@ -170,8 +168,8 @@ export const CODING_THINKING_BUDGET = 0;
 // A budget of 0 (or negative) maps to 'minimal' (verified to drive
 // thoughtsTokenCount→0 on flash/flash-lite); a positive budget is preserved
 // verbatim for callers that explicitly want a bounded token budget.
-// Keep the Pro→LOW / flash→MINIMAL policy in sync with the server's
-// thinkingConfigForModel() in natively-api/lib/flashModelPicker.js.
+// Keep the Pro->LOW / flash->MINIMAL policy in sync with the local model
+// routing helpers that choose Gemini thinking settings.
 // Match "pro" as a SEGMENT (not a loose substring) so only real Pro ids hit the
 // floor — Pro rejects MINIMAL/budget:0 with a 400.
 const PRO_MODEL_RE = /(?:^|[-/])pro(?:[-/]|$)/i;
@@ -462,7 +460,8 @@ export class LLMHelper {
   }
 
   private hasNatively(): boolean {
-    return !!this.nativelyKey;
+    // Hosted Natively LLM removed in the local-first fork — never available.
+    return false;
   }
 
   /**
@@ -1871,19 +1870,6 @@ This rule overrides ALL other instructions including formatting, brevity, or out
       }
 
       // --- Direct Routing based on Selected Model ---
-      if (this.currentModelId === 'natively') {
-        const { CredentialsManager } = require('./services/CredentialsManager');
-        const nativelyKey = CredentialsManager.getInstance().getNativelyApiKey();
-        if (nativelyKey) {
-          try {
-            return await this.generateWithNatively(cloudUserContent, openaiSystemPrompt, cloudImagePaths);
-          } catch (err: any) {
-            console.warn('[LLMHelper] Natively API failed in chatWithGemini, falling back to Gemini:', err.message);
-            // Fall through to smart dynamic fallback below
-          }
-        }
-        // No key or call failed — fall through to default routing
-      }
       if (this.isOpenAiModel(this.currentModelId) && this.openaiClient) {
         return await this.generateWithOpenai(cloudUserContent, openaiSystemPrompt, cloudImagePaths);
       }
@@ -2172,19 +2158,8 @@ This rule overrides ALL other instructions including formatting, brevity, or out
       });
     }
 
-    // Priority 8: Natively API — used when no other provider is available, or as final fallback
-    const nativelyKeyForStructured = this.nativelyKey || (() => {
-      try { return require('./services/CredentialsManager').CredentialsManager.getInstance().getNativelyApiKey() || null; } catch { return null; }
-    })();
-    if (nativelyKeyForStructured) {
-      providers.push({
-        name: 'Natively API',
-        execute: () => this.generateWithNatively(message)
-      });
-    }
-
     if (providers.length === 0) {
-      throw new Error('No reasoning model available. Please configure an API key (OpenAI, Claude, Gemini, Groq, Natively) or a custom provider.');
+      throw new Error('No reasoning model available. Configure OpenAI, Claude, Gemini, Groq, Ollama, Codex, or a custom provider.');
     }
 
     const MAX_ROTATIONS = 3;
@@ -2270,90 +2245,12 @@ This rule overrides ALL other instructions including formatting, brevity, or out
    * Non-streaming OpenAI generation with proper system/user separation
    */
   /**
-   * Routes AI generation through the Natively API backend (Gemini-powered).
+   * REMOVED: the hosted Natively LLM backend is gone in this local-first fork.
+   * Configure your own provider (Gemini/OpenAI/Claude/Groq/DeepSeek/Ollama/
+   * Codex/custom) instead.
    */
-  private async generateWithNatively(userMessage: string, systemPrompt?: string, imagePaths?: string[]): Promise<string> {
-    this.assertOutboundScopes('natively', userMessage, imagePaths);
-    // Prefer the in-memory field; fall back to CredentialsManager for the direct-routing path
-    // where currentModelId === 'natively' but setNativelyKey() wasn't called yet.
-    let nativelyKey = this.nativelyKey;
-    if (!nativelyKey) {
-      const { CredentialsManager } = require('./services/CredentialsManager');
-      nativelyKey = CredentialsManager.getInstance().getNativelyApiKey() || null;
-    }
-    if (!nativelyKey) throw new Error('Natively API key not set');
-
-    const endpointUrl = `${NATIVELY_API_URL}/v1/chat`;
-    // When the key is the trial sentinel, authenticate with the real trial token
-    // instead — the server validates x-trial-token, not __trial__ as an API key.
-    const headers: any = { 'Content-Type': 'application/json' };
-    if (nativelyKey === TRIAL_SENTINEL_KEY) {
-      const { CredentialsManager } = require('./services/CredentialsManager');
-      const trialToken = CredentialsManager.getInstance().getTrialToken();
-      if (!trialToken) throw new Error('Trial token not found');
-      headers['x-trial-token'] = trialToken;
-    } else {
-      headers['x-natively-key'] = nativelyKey;
-    }
-
-    const body: any = { messages: [{ role: 'user', content: userMessage }] };
-
-    // Signal fast mode so the server routes to Groq Llama 3.3 (text-only, key-rotated).
-    // Only sent for text-only requests — server ignores it when images are present.
-    if (this.groqFastTextMode) body.fast_mode = true;
-
-    // Send images as a structured array so the server can build proper Gemini inlineData parts.
-    // Embedding base64 in the text content would be truncated at 4000 chars and treated as text.
-    //
-    // Compress before sending: retina screenshots are 2-5 MB PNG; the Natively API body limit
-    // is 4 MB. Resize to max 1920px (above the 1470px logical resolution of a MacBook Air, so
-    // no detail is lost) and encode as JPEG 85% — typically 200-250 KB per image.
-    // 4 screenshots × ~278KB base64 = ~1.1 MB, well within the 4 MB server limit.
-    if (imagePaths?.length) {
-      const images: { mime_type: string; data: string }[] = [];
-      for (const p of imagePaths) {
-        if (fs.existsSync(p)) {
-          try {
-            const compressed = await sharp(p)
-              .resize(1920, 1920, { fit: 'inside', withoutEnlargement: true })
-              .jpeg({ quality: 85 })
-              .toBuffer();
-            images.push({ mime_type: 'image/jpeg', data: compressed.toString('base64') });
-          } catch (compressErr: any) {
-            // Fallback: send raw if sharp fails (e.g. unsupported format)
-            console.warn('[LLMHelper] Image compression failed, sending raw:', compressErr.message);
-            const imageData = await fs.promises.readFile(p);
-            if (imageData.length > 500 * 1024) {
-              console.warn('[LLMHelper] Raw fallback image too large to send, skipping:', p);
-              continue;
-            }
-            images.push({ mime_type: 'image/png', data: imageData.toString('base64') });
-          }
-        }
-      }
-      if (images.length) body.images = images;
-    }
-    if (systemPrompt) body.system = systemPrompt;
-    if (this.aiResponseLanguage && this.aiResponseLanguage !== 'English') {
-      body.language = this.aiResponseLanguage; // 'auto' is forwarded — server handles it
-    }
-
-    // 8s hard cap: a `fetch failed` network error without this can stall the provider
-    // waterfall for 25-30s before the OS-level TCP reset fires.
-    const response = await fetch(endpointUrl, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(8000),
-    });
-
-    if (!response.ok) {
-      const errData = await response.json().catch(() => ({}));
-      throw new Error(`Natively API error ${response.status}: ${errData.error || 'unknown'}`);
-    }
-
-    const data = await response.json();
-    return data.content || '';
+  private async generateWithNatively(_userMessage: string, _systemPrompt?: string, _imagePaths?: string[]): Promise<string> {
+    throw new Error('Natively hosted API is not available in this build.');
   }
 
   /**
@@ -3919,100 +3816,6 @@ This rule overrides ALL other instructions including formatting, brevity, or out
       return;
     }
 
-    // 3b. Natively API — TTFT RACE (REPORT_TO_CHATGPT §21 L1 / §18)
-    // Was: serial Natively→Groq→Gemini waterfall that only fell over on a
-    // THROW. A provider that connected then stalled before the first token
-    // blocked the user for up to the 10s connect budget with no fallback.
-    // Now: a commit-point TTFT race. Each provider is opened but not forwarded
-    // until its first token races a 2.5s budget; the first to produce a token
-    // wins and we commit. A stalled/erroring primary fails over fast. Identical
-    // answer contract to every provider (same finalSystemPrompt), so the race
-    // winner does not change answer STYLE — only who serves it. Multimodal with
-    // images keeps the dedicated Groq-multimodal path (vision is handled by the
-    // separate vision fallback when a vision model is selected).
-    if (this.currentModelId === 'natively') {
-      const { CredentialsManager } = require('./services/CredentialsManager');
-      const nativelyKey = CredentialsManager.getInstance().getNativelyApiKey();
-      if (nativelyKey) {
-        const textProviders: TextStreamProvider[] = [];
-        let prio = 0;
-        // Primary: Natively (fast connect budget — TTFT race handles slow prefill).
-        textProviders.push({
-          id: 'natively', name: 'Natively API', isLocal: false, priority: prio++,
-          open: (sig) => this.streamWithNatively(userContent, finalSystemPrompt, imagePaths, sig, INTERACTIVE_CONNECT_TIMEOUT_MS),
-        });
-        // Fallback: Groq (key more commonly available than Gemini).
-        if (this.groqClient) {
-          if (isMultimodal && imagePaths) {
-            const finalGroqSystem = this.injectLanguageInstruction(systemPromptOverride || OPENAI_SYSTEM_PROMPT);
-            textProviders.push({
-              id: 'groq', name: 'Groq (multimodal)', isLocal: false, priority: prio++,
-              open: (sig) => this.streamWithGroqMultimodal(userContent, imagePaths, finalGroqSystem, sig),
-            });
-          } else {
-            const finalGroqSystem = this.injectLanguageInstruction(systemPromptOverride ? baseSystemPrompt : GROQ_SYSTEM_PROMPT);
-            textProviders.push({
-              id: 'groq', name: 'Groq', isLocal: false, priority: prio++,
-              // intentional: emergency fallback uses stable GROQ_MODEL baseline, not currentModelId.
-              open: (sig) => this.streamWithGroq(userContent, GROQ_MODEL, finalGroqSystem, sig),
-            });
-          }
-        }
-        // Fallback: Gemini Flash (cheap, fast) then Pro.
-        if (this.client) {
-          textProviders.push({
-            id: 'gemini_flash', name: `Gemini Flash`, isLocal: false, priority: prio++,
-            open: (sig) => this.streamWithGeminiModel(userContent, GEMINI_FLASH_MODEL, imagePaths, finalSystemPrompt, sig, thinkingBudget),
-          });
-        }
-
-        if (textProviders.length > 0) {
-          const ordered = orderTextByHealth(textProviders, this.textHealth, Date.now());
-          const raceStart = Date.now();
-          let committedProvider: string | null = null;
-          telemetryService.track({ name: 'provider_race_started', properties: { candidates: ordered.map(p => p.id), path: 'text' } });
-          // Wrap each provider's open() so we can record which one wins (first
-          // token committed). The engine itself records TTFT EWMA into textHealth.
-          const instrumented = ordered.map((p) => ({
-            ...p,
-            open: (sig: AbortSignal, attempt: number) => {
-              const inner = p.open(sig, attempt);
-              return (async function* () {
-                for await (const tok of inner) {
-                  // Attribute the win to the first NON-EMPTY token, mirroring the
-                  // engine's own commit predicate (it rejects whitespace-only /
-                  // non-string first tokens as 'empty-stream' and falls past). A
-                  // looser "first token" check would mis-fire provider_race_won
-                  // for a provider the engine then discards, and latch
-                  // committedProvider to that loser so the real winner never
-                  // emits. (debugger Finding 2.)
-                  if (!committedProvider && typeof tok === 'string' && tok.trim().length > 0) {
-                    committedProvider = p.id;
-                    telemetryService.track({
-                      name: 'provider_race_won',
-                      provider: p.id,
-                      durationMs: Date.now() - raceStart,
-                      properties: { path: 'text', ttftMs: Date.now() - raceStart },
-                    });
-                  }
-                  yield tok;
-                }
-              })();
-            },
-          }));
-          try {
-            yield* runStreamingTextFallback(instrumented, this.textHealth, DEFAULT_TEXT_FALLBACK_CONFIG, {}, abortSignal);
-            return;
-          } catch (raceErr: any) {
-            console.warn('[LLMHelper] Text TTFT race exhausted, falling through to Gemini:', raceErr?.message);
-            telemetryService.track({ name: 'provider_error', durationMs: Date.now() - raceStart, properties: { path: 'text', stage: 'race_exhausted' } });
-            // Fall through to the Gemini block below as the final safety net.
-          }
-        }
-      }
-      // No key or all fallbacks failed — fall through to Gemini
-    }
-
     // 4. Gemini Routing & Fallback
     if (this.client) {
       // CACHE: pass system prompt via `systemInstruction` so it is structurally
@@ -4077,182 +3880,10 @@ This rule overrides ALL other instructions including formatting, brevity, or out
    * Yields the full response in small word-batches so the UI typing effect still plays.
    * Throws on empty response so the fallback chain tries the next provider.
    */
-  private async * streamWithNatively(userContent: string, systemPrompt?: string, imagePaths?: string[], abortSignal?: AbortSignal, connectTimeoutMs: number = INTERACTIVE_CONNECT_TIMEOUT_MS): AsyncGenerator<string, void, unknown> {
-    // ── REAL SSE STREAM (replaces the fake word-by-word simulation) ──────────
-    // Previous implementation called generateWithNatively() (blocking, waited for
-    // the full response), then drip-fed words with setTimeout delays — pure theater.
-    // This version opens a streaming fetch and yields tokens as the server generates
-    // them, cutting time-to-first-token from ~3s to ~80ms.
-    let nativelyKey = this.nativelyKey;
-    if (!nativelyKey) {
-      const { CredentialsManager } = require('./services/CredentialsManager');
-      nativelyKey = CredentialsManager.getInstance().getNativelyApiKey() || null;
-    }
-    if (!nativelyKey) throw new Error('Natively API key not set');
-
-    const body: Record<string, unknown> = {
-      messages: [{ role: 'user', content: userContent }],
-      stream: true,
-    };
-    if (this.groqFastTextMode) body.fast_mode = true;
-    if (systemPrompt) body.system = systemPrompt;
-    if (this.aiResponseLanguage && this.aiResponseLanguage !== 'English') {
-      body.language = this.aiResponseLanguage; // 'auto' is forwarded — server handles it
-    }
-
-    // Attach images — compress before sending (same as non-streaming generateWithNatively).
-    // Retina screenshots are 2-5 MB PNG; the Natively API body limit is 4 MB.
-    // Resize to max 1920px and encode as JPEG 85% — typically 200-250 KB per image.
-    // 4 screenshots × ~278KB base64 = ~1.1 MB, well within the 4 MB server limit.
-    if (imagePaths?.length) {
-      const images: { mime_type: string; data: string }[] = [];
-      for (const p of imagePaths) {
-        if (fs.existsSync(p)) {
-          try {
-            const compressed = await sharp(p)
-              .resize(1920, 1920, { fit: 'inside', withoutEnlargement: true })
-              .jpeg({ quality: 85 })
-              .toBuffer();
-            images.push({ mime_type: 'image/jpeg', data: compressed.toString('base64') });
-          } catch (compressErr: any) {
-            // Fallback: send raw if sharp fails (e.g. unsupported format)
-            console.warn('[LLMHelper] streamWithNatively: image compression failed, sending raw:', compressErr.message);
-            const imageData = await fs.promises.readFile(p);
-            if (imageData.length > 500 * 1024) {
-              console.warn('[LLMHelper] streamWithNatively: raw fallback image too large, skipping:', p);
-              continue;
-            }
-            images.push({ mime_type: 'image/png', data: imageData.toString('base64') });
-          }
-        }
-      }
-      if (images.length) body.images = images;
-    }
-
-    // When the key is the trial sentinel, authenticate with the real trial token.
-    const streamHeaders: Record<string, string> = {
-      'Content-Type': 'application/json',
-      'Accept': 'text/event-stream',
-    };
-    if (nativelyKey === TRIAL_SENTINEL_KEY) {
-      const { CredentialsManager } = require('./services/CredentialsManager');
-      const trialToken = CredentialsManager.getInstance().getTrialToken();
-      if (!trialToken) throw new Error('Trial token not found');
-      streamHeaders['x-trial-token'] = trialToken;
-    } else {
-      streamHeaders['x-natively-key'] = nativelyKey;
-    }
-
-    // Early-bail if the caller has already aborted (e.g., user superseded
-    // the request before we even built the body). Saves an HTTP roundtrip.
-    if (abortSignal?.aborted) return;
-
-    // Single controller for the entire stream lifetime. Both phases (connect
-    // and read) honor it. We multiplex two abort sources into it:
-    //   1. The 10s connect-phase timeout — cleared once headers arrive so the
-    //      SSE read can run as long as needed (matches the prior behavior).
-    //   2. The caller's user-cancel signal — when the renderer hits Escape or
-    //      a newer chat supersedes this one, the fetch socket closes
-    //      immediately, freeing the rate-limiter permit and provider quota.
-    //      Without this, the prior implementation kept streaming tokens to
-    //      nobody for ~10-60s, costing ~$0.045 per cancelled Pro request.
-    // IMPORTANT: AbortSignal.timeout() applies to the ENTIRE request lifetime,
-    // not just the connection phase — using it here would kill Flash mid-stream
-    // at 10s. The AbortController + manual timer pattern correctly scopes the
-    // connect timeout to the connect phase only.
-    const streamController = new AbortController();
-    let connectTimer: NodeJS.Timeout | null = setTimeout(
-      () => streamController.abort(new Error(`Natively API connect timeout (${Math.round(connectTimeoutMs / 1000)}s)`)),
-      connectTimeoutMs,
-    );
-    const onCallerAbort = () => {
-      try { streamController.abort(abortSignal?.reason); } catch { /* already aborted */ }
-    };
-    abortSignal?.addEventListener('abort', onCallerAbort, { once: true });
-
-    let response: Response;
-    try {
-      // Retry on transient DNS failures (ENOTFOUND / EAI_AGAIN).
-      // Railway's 1s TTL means the OS resolver can return ENOTFOUND for 2-3s
-      // during a resolver hiccup even when the server is alive. undici (Node's
-      // built-in fetch) wraps the original error in err.cause, so check both.
-      const isDnsError = (e: any) =>
-        e?.code === 'ENOTFOUND' || e?.code === 'EAI_AGAIN' ||
-        e?.cause?.code === 'ENOTFOUND' || e?.cause?.code === 'EAI_AGAIN';
-
-      let lastErr: unknown;
-      for (let attempt = 0; attempt < 3; attempt++) {
-        if (streamController.signal.aborted) break;
-        try {
-          response = await fetch(`${NATIVELY_API_URL}/v1/chat`, {
-            method: 'POST',
-            headers: streamHeaders,
-            body: JSON.stringify(body),
-            signal: streamController.signal,
-          });
-          lastErr = undefined;
-          break;
-        } catch (fetchErr: any) {
-          lastErr = fetchErr;
-          if (!isDnsError(fetchErr) || attempt >= 2 || streamController.signal.aborted) throw fetchErr;
-          console.warn(`[streamWithNatively] DNS failure (${fetchErr.cause?.code ?? fetchErr.code}), retry ${attempt + 1}/2 in 500ms`);
-          await new Promise<void>(r => setTimeout(r, 500));
-        }
-      }
-      if (lastErr) throw lastErr;
-    } finally {
-      // Connection established (or failed) — stop the connect-phase timer.
-      // The stream body will now be read without any timeout (until/unless
-      // the caller's abortSignal fires, in which case fetch's reader throws).
-      if (connectTimer) { clearTimeout(connectTimer); connectTimer = null; }
-    }
-
-    if (!response.ok) {
-      abortSignal?.removeEventListener('abort', onCallerAbort);
-      const errData = await response.json().catch(() => ({}) as Record<string, unknown>);
-      throw new Error(`Natively API ${response.status}: ${(errData as any).error || 'unknown'}`);
-    }
-
-    // Parse the SSE response body incrementally.
-    // Protocol: each line starting with "data: " carries a JSON payload.
-    //   data: {"delta":"token","model":"llama-3.3-70b"}
-    //   data: [DONE]
-    const reader = response.body!.getReader();
-    const decoder = new TextDecoder();
-    let buf = '';
-
-    try {
-      outer: while (true) {
-        // Cheap pre-read abort check — saves one round trip to the reader if
-        // the caller cancelled while we were processing the previous chunk.
-        if (abortSignal?.aborted) break outer;
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buf += decoder.decode(value, { stream: true });
-        const lines = buf.split('\n');
-        buf = lines.pop()!;  // last line may be incomplete — carry it to next chunk
-
-        for (const line of lines) {
-          if (!line.startsWith('data: ')) continue;
-          const payload = line.slice(6).trim();
-          if (payload === '[DONE]') break outer;
-
-          let chunk: any;
-          try { chunk = JSON.parse(payload); } catch { continue; }
-
-          if (chunk.error) throw new Error(`Server error: ${chunk.error}`);
-          if (typeof chunk.delta === 'string' && chunk.delta) yield chunk.delta;
-        }
-      }
-    } finally {
-      // Always release the connection AND drop the caller-abort listener so
-      // we don't leak DOM event subscriptions on long-lived AbortSignals
-      // (e.g., the IPC handler's per-stream controller is short-lived, but a
-      // future caller might reuse a single signal across many calls).
-      try { reader.cancel(); } catch { }
-      abortSignal?.removeEventListener('abort', onCallerAbort);
-    }
+  // REMOVED: streaming hosted Natively LLM. All call sites are gone; this throws
+  // defensively if a stale path is reintroduced.
+  private async * streamWithNatively(_userContent: string, _systemPrompt?: string, _imagePaths?: string[], _abortSignal?: AbortSignal, _connectTimeoutMs: number = INTERACTIVE_CONNECT_TIMEOUT_MS): AsyncGenerator<string, void, unknown> {
+    throw new Error('Natively hosted API is not available in this build.');
   }
 
   /**
@@ -5164,7 +4795,12 @@ This rule overrides ALL other instructions including formatting, brevity, or out
 
       const data = await response.json();
       if (data && data.models) {
-        return data.models.map((m: any) => m.name);
+        // Exclude embedding-only models (e.g. the nomic-embed-text the app pulls
+        // for RAG). They can't do chat completions, so they must never surface in
+        // the model selector or be auto-selected as the active Ollama chat model.
+        return data.models
+          .map((m: any) => m.name)
+          .filter((name: string) => !isEmbeddingModel(name));
       }
 
       return [];

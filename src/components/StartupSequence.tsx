@@ -28,6 +28,9 @@ const FONTS = {
     interLight: "'Inter Light', 'Geist', ui-sans-serif, system-ui, sans-serif",
 };
 
+const FORK_NOTICE_URL = 'https://github.com/NeuroMarshal/natively-cluely-ai-assistant/blob/main/FORK_NOTICE.md';
+const LICENSE_URL = 'https://github.com/NeuroMarshal/natively-cluely-ai-assistant/blob/main/LICENSE';
+
 // Spring Physics
 const springEase = [0.23, 1, 0.32, 1] as [number, number, number, number];
 
@@ -120,10 +123,6 @@ const StartupSequence: React.FC<StartupSequenceProps> = ({ onComplete }) => {
                     font-weight: 300;
                     font-style: normal;
                 }
-                /* Drop the unused 'Geist' web font (FONTS.display is referenced 0×; the
-                   active startup fonts use local @font-face above and only list Geist as a
-                   tertiary fallback). IBM Plex Sans is kept — it styles the 'reddit' badge. */
-                @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@500;600&display=swap');
                 * { box-sizing: border-box; -webkit-font-smoothing: antialiased; }
             `}</style>
 
@@ -185,19 +184,19 @@ const StartupSequence: React.FC<StartupSequenceProps> = ({ onComplete }) => {
                 {/* Footer Component */}
                 <motion.div variants={itemVariants} className="mt-auto flex flex-col items-center w-full">
                     <p className="text-[12px] opacity-60 mb-6 text-center" style={{ color: '#a7a7ad' }}>
-                        By clicking Continue, you agree to our{' '}
+                        By clicking Continue, you acknowledge the{' '}
                         <span
-                            onClick={() => (window.electronAPI as any)?.openExternal?.('https://natively.software/termsandconditions')}
+                            onClick={() => (window.electronAPI as any)?.openExternal?.(FORK_NOTICE_URL)}
                             className="font-semibold text-[#2f2f34] underline underline-offset-[3px] decoration-[#2f2f34]/30 hover:decoration-[#2f2f34]/70 cursor-pointer transition-colors"
                         >
-                            Terms &amp; Conditions
+                            fork notice
                         </span>
                         {' '}and{' '}
                         <span
-                            onClick={() => (window.electronAPI as any)?.openExternal?.('https://natively.software/privacy')}
+                            onClick={() => (window.electronAPI as any)?.openExternal?.(LICENSE_URL)}
                             className="font-semibold text-[#2f2f34] underline underline-offset-[3px] decoration-[#2f2f34]/30 hover:decoration-[#2f2f34]/70 cursor-pointer transition-colors"
                         >
-                            Privacy Policy
+                            AGPL license
                         </span>
                         .
                     </p>

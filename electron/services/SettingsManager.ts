@@ -31,6 +31,11 @@ export interface AppSettings {
     localWhisperPerChannelEnabled?: boolean;
     localWhisperModelMic?: string;
     localWhisperModelSystem?: string;
+    // Selected on-device embedding model id (electron/rag/embeddingModelManager
+    // catalog). Powers semantic search over the local knowledge DB. Downloaded
+    // directly via transformers.js — never pulled through Ollama. Defaults to the
+    // bundled MiniLM until the user installs the multilingual default.
+    localEmbeddingModel?: string;
     // Phase 6 — TelemetryService toggle. Defaults to true (local-only JSONL).
     // When false, no telemetry is written to disk and no sinks fire.
     telemetryEnabled?: boolean;

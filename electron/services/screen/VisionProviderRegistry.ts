@@ -39,7 +39,6 @@ export function buildVisionProviders(inputs: VisionProviderBuildInputs): VisionP
   const cloudAllowed = inputs.mode !== 'private_vision';
 
   if (cloudAllowed) {
-    providers.push(natively(credentials, inputs));
     providers.push(openai(credentials, inputs));
     providers.push(geminiFlash(credentials, inputs));
     providers.push(claude(credentials, inputs));
@@ -56,21 +55,6 @@ export function buildVisionProviders(inputs: VisionProviderBuildInputs): VisionP
 }
 
 // ─── Provider builders ────────────────────────────────────────────────────
-
-function natively(creds: CredentialsManager, _inputs: VisionProviderBuildInputs): VisionProviderConfig {
-  const apiKey = creds.getNativelyApiKey();
-  return {
-    id: 'natively',
-    displayName: 'Natively API',
-    modelId: 'natively',
-    isLocal: false,
-    isConfigured: !!apiKey,
-    supportsVision: !!apiKey,
-    scopeAllowsScreenshots: true,
-    hint: 'natively',
-    invoke: async (p) => callLLMHelperVision('natively', p),
-  };
-}
 
 function openai(creds: CredentialsManager, _inputs: VisionProviderBuildInputs): VisionProviderConfig {
   const apiKey = creds.getOpenaiApiKey();

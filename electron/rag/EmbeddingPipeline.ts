@@ -1,7 +1,6 @@
 // electron/rag/EmbeddingPipeline.ts
 // Post-meeting embedding generation with queue-based retry logic
-// Uses pluggable IEmbeddingProvider (Gemini, OpenAI, or Ollama)
-// On provider exhaustion, automatically falls back to LocalEmbeddingProvider (on-device).
+// Uses a user-selectable, fully local embedding provider.
 
 import Database from 'better-sqlite3';
 import { VectorStore } from './VectorStore';
@@ -9,6 +8,7 @@ import { VectorStore } from './VectorStore';
 import { EmbeddingProviderResolver, AppAPIConfig } from './EmbeddingProviderResolver';
 import { IEmbeddingProvider } from './providers/IEmbeddingProvider';
 import { LocalEmbeddingProvider } from './providers/LocalEmbeddingProvider';
+import { BUNDLED_EMBEDDING_MODEL_ID } from './embeddingModelManager';
 
 const MAX_RETRIES = 3;
 const RETRY_DELAY_BASE_MS = 2000;
@@ -25,7 +25,7 @@ const EMBED_TIMEOUT_MS = 30_000;
  * - NOT real-time: embeddings generated after meeting ends
  * - Queue-based: persists in SQLite for retry on failure
  * - Background processing: doesn't block UI
- * - Provider-agnostic: works with Gemini, OpenAI, or Ollama embeddings
+ * - Model-aware: changing the local model creates a new embedding space
  */
 export class EmbeddingPipeline {
     private provider: IEmbeddingProvider | null = null;
@@ -68,7 +68,13 @@ export class EmbeddingPipeline {
             geminiEmbeddingModel: config.geminiEmbeddingModel || null,
             geminiEmbeddingDims: config.geminiEmbeddingDims || null,
         });
-        this.initPromise = this._doInitialize(config);
+        // Serialize model changes. A second selection can arrive while a large
+        // model is still loading; running both initializations concurrently lets
+        // the slower, older selection win the race and overwrite the provider.
+        const previousInit = this.initPromise ?? Promise.resolve();
+        this.initPromise = previousInit
+            .catch(() => { /* a later valid selection may recover */ })
+            .then(() => this._doInitialize(config));
         return this.initPromise;
     }
 
@@ -77,6 +83,13 @@ export class EmbeddingPipeline {
      * Prevents redundant re-initialization when the same keys are passed again.
      */
     private _isConfigImprovement(prev: AppAPIConfig, next: AppAPIConfig): boolean {
+        // A change to the selected on-device embedding model means a DIFFERENT
+        // embedding space → the pipeline must re-resolve and re-index. (The old
+        // key/url checks are kept harmless but no longer drive provider choice
+        // now that embeddings are local-only.)
+        if ((next.localEmbeddingModel ?? '') !== (prev.localEmbeddingModel ?? '')) {
+            return true;
+        }
         const hasNew = (prevVal: string | undefined, nextVal: string | undefined) =>
             !prevVal && !!nextVal;
         return (
@@ -87,31 +100,16 @@ export class EmbeddingPipeline {
     }
 
     private async _doInitialize(config: AppAPIConfig): Promise<void> {
-        // ── Step 1: Eagerly init the local fallback FIRST, independently of the primary.
-        // This guarantees fallbackProvider is set even if the primary throws,
-        // so activateMeetingFallback() is always safe to call.
-        try {
-            const local = new LocalEmbeddingProvider();
-            if (await local.isAvailable()) {
-                this.fallbackProvider = local;
-                console.log(`[EmbeddingPipeline] Local fallback provider ready (${local.dimensions}d)`);
-            } else {
-                console.warn('[EmbeddingPipeline] Local fallback provider unavailable — bundled model may be missing');
-            }
-        } catch (e) {
-            console.warn('[EmbeddingPipeline] Could not initialize local fallback provider:', e);
-        }
-
-        // ── Step 2: Resolve primary provider.
+        // Local embeddings are the ONLY path now: resolve the selected on-device
+        // model (or the bundled model when the selection isn't downloaded yet).
+        // The provider is always its own fallback — there is no remote provider to
+        // exhaust — so the fast-query path (localSpaceKey/localDimensions) and
+        // activateMeetingFallback() reuse this same instance rather than loading a
+        // second copy of the model.
         try {
             this.provider = await EmbeddingProviderResolver.resolve(config);
-            console.log(`[EmbeddingPipeline] Ready with provider: ${this.provider.name} (${this.provider.dimensions}d)`);
-
-            // If the primary IS local, point fallbackProvider at the same instance to avoid
-            // loading the model twice.
-            if (this.provider instanceof LocalEmbeddingProvider) {
-                this.fallbackProvider = this.provider;
-            }
+            this.fallbackProvider = this.provider;
+            console.log(`[EmbeddingPipeline] Ready with provider: ${this.provider.name} (${this.provider.model} ${this.provider.dimensions}d)`);
 
             // Check for previous embedding-SPACE mismatches.
             // Trigger off the count of incompatible meetings (not just lastSpace !=
@@ -134,21 +132,20 @@ export class EmbeddingPipeline {
             this.db.prepare("INSERT OR REPLACE INTO app_state (key, value) VALUES ('last_embedding_space', ?)").run(activeSpace);
 
         } catch (err) {
-            console.error('[EmbeddingPipeline] Failed to initialize primary provider:', err);
-            // Don't rethrow — if we have a fallback, the pipeline can still function
-            // in local-only mode. Callers check isReady() which checks this.provider.
-            // Only throw if we also have no fallback at all.
-            if (!this.fallbackProvider) {
+            console.error('[EmbeddingPipeline] Failed to initialize embedding provider:', err);
+            // Last resort: the bundled MiniLM, which ships in resources and always
+            // works offline. If even this fails to load, the install is corrupt —
+            // rethrow so the caller surfaces a reinstall error.
+            try {
+                const bundled = new LocalEmbeddingProvider(BUNDLED_EMBEDDING_MODEL_ID);
+                if (!(await bundled.isAvailable())) throw err;
+                this.provider = bundled;
+                this.fallbackProvider = bundled;
+                console.warn('[EmbeddingPipeline] Using bundled local model after primary init failure.');
+                this.db.prepare("INSERT OR REPLACE INTO app_state (key, value) VALUES ('last_embedding_space', ?)").run(bundled.space);
+            } catch (_) {
                 throw err;
             }
-            console.warn('[EmbeddingPipeline] Falling back to local-only mode for all meetings.');
-            // Promote fallback as the primary so isReady() returns true and queueing works.
-            this.provider = this.fallbackProvider;
-            // Persist the fallback provider's space so the next launch does not fire a
-            // false-positive incompatible-space warning (e.g. openai space vs local space).
-            try {
-                this.db.prepare("INSERT OR REPLACE INTO app_state (key, value) VALUES ('last_embedding_space', ?)").run(this.provider.space);
-            } catch (_) { /* non-fatal — DB may not have app_state yet in edge cases */ }
         }
 
         // Flush any queue items submitted during the startup race window (i.e. before the
@@ -173,18 +170,15 @@ export class EmbeddingPipeline {
      * Throws if initialization failed entirely.
      */
     async waitForReady(timeoutMs: number = 15000): Promise<void> {
-        if (this.provider) return; // already ready
         if (this.initPromise) {
-            // Race against a timeout so we don't hang forever
             await Promise.race([
                 this.initPromise,
                 new Promise<void>((_, reject) =>
                     setTimeout(() => reject(new Error(`Embedding pipeline initialization timed out after ${timeoutMs}ms`)), timeoutMs)
                 )
             ]);
-            return;
         }
-        throw new Error('Embedding pipeline has not been initialized');
+        if (!this.provider) throw new Error('Embedding pipeline has not been initialized');
     }
 
     /**

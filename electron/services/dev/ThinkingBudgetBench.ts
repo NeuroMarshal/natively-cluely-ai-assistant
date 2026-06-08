@@ -333,16 +333,17 @@ export async function runThinkingMatrix(llmHelper: LLMHelper, opts: { model?: st
   const appClient = (llmHelper as any).client;
   if (!appClient) { log('[matrix] no Gemini client'); return null; }
 
-  // KEY ROTATION (opt-in): Pro free-tier is 250 req/day/key AND has a ~30s RPM
-  // window. Rotating across several keys multiplies effective throughput. When
-  // THINKING_BENCH_KEYS_FROM_NATIVELY=1, load every GEMINI_API_KEY* from
-  // natively-api/.env, build a client per key, rotate per call, and on a 429
-  // retry on the NEXT key after a short backoff. Falls back to the app client.
+  // KEY ROTATION (opt-in): Gemini free-tier keys have daily/RPM caps. Rotating
+  // across several local dev keys multiplies effective throughput. When
+  // THINKING_BENCH_KEYS_FILE points at an env-style file, load every
+  // GEMINI_API_KEY* from it, build a client per key, rotate per call, and on a
+  // 429 retry on the NEXT key after a short backoff. Falls back to the app
+  // client.
   const clients: any[] = [];
-  if (process.env.THINKING_BENCH_KEYS_FROM_NATIVELY === '1') {
+  if (process.env.THINKING_BENCH_KEYS_FILE) {
     try {
       const { GoogleGenAI } = require('@google/genai');
-      const envPath = path.join(process.cwd(), 'natively-api/.env');
+      const envPath = path.resolve(process.env.THINKING_BENCH_KEYS_FILE);
       const env = fs.readFileSync(envPath, 'utf8');
       let keys = [...env.matchAll(/^GEMINI_API_KEY(?:_\d+)?="?([^"\n]+)"?$/mg)].map(m => m[1].trim());
       keys = Array.from(new Set(keys));
@@ -351,7 +352,7 @@ export async function runThinkingMatrix(llmHelper: LLMHelper, opts: { model?: st
       const only = (process.env.THINKING_BENCH_KEY_INDICES || '').split(',').map(s => Number(s.trim())).filter(n => n > 0);
       if (only.length) keys = only.map(n => keys[n - 1]).filter(Boolean);
       for (const k of keys) clients.push(new GoogleGenAI({ apiKey: k }));
-      log(`[matrix] rotating across ${clients.length} keys from natively-api/.env${only.length ? ` (indices ${only.join(',')})` : ''}`);
+      log(`[matrix] rotating across ${clients.length} keys from ${envPath}${only.length ? ` (indices ${only.join(',')})` : ''}`);
     } catch (e: any) { log(`[matrix] key load failed: ${e?.message}; using app client`); }
   }
   if (!clients.length) clients.push(appClient);

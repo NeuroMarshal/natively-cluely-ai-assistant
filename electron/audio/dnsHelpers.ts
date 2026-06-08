@@ -14,7 +14,7 @@ const DNS_CACHE_TTL_MS = 60_000;
  *
  * Why this exists: on macOS, Node's default `getaddrinfo(AF_UNSPEC)` lookup on
  * dual-stack hosts can return a hard `ENOTFOUND` for IPv4-only CNAME chains
- * (e.g. api.natively.software → *.up.railway.app → 66.33.22.108) when the
+ * (e.g. provider gateway hostnames behind short-TTL CNAMEs) when the
  * machine has a link-local IPv6 address (fe80::…) but no real v6 path.
  * curl/libcurl handles this gracefully by falling back to v4; libuv on Darwin
  * sometimes does not. Symptom: `nslookup` and `curl` resolve fine from the

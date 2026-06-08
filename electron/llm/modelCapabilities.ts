@@ -74,6 +74,27 @@ export function parseOllamaSize(id: string): number | null {
   return null;
 }
 
+// Embedding-only models. These produce vectors, not chat completions, so they
+// must never be offered as a selectable chat/"active" model nor auto-selected as
+// the local Ollama chat model. The app itself pulls `nomic-embed-text` into
+// Ollama for RAG search over the local knowledge DB — without this filter it
+// leaks into the model selector and, worse, can become availableModels[0] in
+// initializeOllamaModel() and break local chat entirely.
+const EMBEDDING_MODEL_PATTERNS: RegExp[] = [
+  /embed/i,                    // nomic-embed-text, mxbai-embed-large, snowflake-arctic-embed, granite-embedding, embeddinggemma, qwen3-embedding, text-embedding-*
+  /^all-minilm/i,
+  /^bge[-:/]/i,                // bge-m3, bge-large, bge-small
+  /^paraphrase-multilingual/i,
+  /^(multilingual-)?e5[-:/]/i, // e5-large, multilingual-e5
+  /^gte[-:/]/i,                // gte-large, gte-base
+];
+
+export function isEmbeddingModel(id: string): boolean {
+  if (!id) return false;
+  const s = id.toLowerCase();
+  return EMBEDDING_MODEL_PATTERNS.some(re => re.test(s));
+}
+
 // Vision-capable Ollama families.
 function ollamaSupportsImages(id: string): boolean {
   const s = id.toLowerCase();

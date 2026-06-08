@@ -206,63 +206,63 @@ export const AboutSection: React.FC<AboutSectionProps> = () => {
             <div>
                 <h4 className="text-xs font-bold text-text-tertiary uppercase tracking-wider mb-2 px-1">Community</h4>
                 <div className="space-y-4">
-                    {/* 0. Official Website */}
+                    {/* 0. Source Repository */}
                     <div className="bg-bg-item-surface rounded-xl border border-border-subtle p-5 flex flex-col md:flex-row items-center justify-between gap-4">
                         <div className="flex items-center gap-4">
                             <div className="w-10 h-10 rounded-full bg-indigo-500/10 flex items-center justify-center text-indigo-500 shadow-sm shadow-indigo-500/5">
                                 <Globe size={18} className="opacity-80" />
                             </div>
                             <div>
-                                <h5 className="text-sm font-bold text-text-primary">Official Website</h5>
+                                <h5 className="text-sm font-bold text-text-primary">Source Repository</h5>
                             </div>
                         </div>
                         <a
-                            href="https://natively.software"
-                            onClick={(e) => handleOpenLink(e, "https://natively.software")}
+                            href="https://github.com/NeuroMarshal/natively-cluely-ai-assistant"
+                            onClick={(e) => handleOpenLink(e, "https://github.com/NeuroMarshal/natively-cluely-ai-assistant")}
                             className="whitespace-nowrap px-4 py-2 bg-text-primary hover:bg-white/90 text-bg-main text-xs font-bold rounded-lg transition-all shadow hover:shadow-lg hover:-translate-y-0.5 active:translate-y-0 flex items-center gap-2"
                         >
                             <Globe size={14} />
-                            Visit Website
+                            Open Repo
                         </a>
                     </div>
 
-                    {/* 0.5. Telegram Community */}
+                    {/* 0.5. Issues */}
                     <div className="bg-bg-item-surface rounded-xl border border-border-subtle p-5 flex flex-col md:flex-row items-center justify-between gap-4">
                         <div className="flex items-center gap-4">
                             <div className="w-10 h-10 rounded-full bg-sky-500/10 flex items-center justify-center text-sky-500 shadow-sm shadow-sky-500/5">
                                 <Send size={18} className="opacity-80" />
                             </div>
                             <div>
-                                <h5 className="text-sm font-bold text-text-primary">Telegram Community</h5>
+                                <h5 className="text-sm font-bold text-text-primary">Issues & Support</h5>
                             </div>
                         </div>
                         <a
-                            href="https://t.me/nativelyaichat"
-                            onClick={(e) => handleOpenLink(e, "https://t.me/nativelyaichat")}
+                            href="https://github.com/NeuroMarshal/natively-cluely-ai-assistant/issues"
+                            onClick={(e) => handleOpenLink(e, "https://github.com/NeuroMarshal/natively-cluely-ai-assistant/issues")}
                             className="whitespace-nowrap px-4 py-2 bg-text-primary hover:bg-white/90 text-bg-main text-xs font-bold rounded-lg transition-all shadow hover:shadow-lg hover:-translate-y-0.5 active:translate-y-0 flex items-center gap-2"
                         >
                             <Send size={14} />
-                            Join Chat
+                            Open Issues
                         </a>
                     </div>
 
-                    {/* 0.6. Natively LinkedIn */}
+                    {/* 0.6. Releases */}
                     <div className="bg-bg-item-surface rounded-xl border border-border-subtle p-5 flex flex-col md:flex-row items-center justify-between gap-4">
                         <div className="flex items-center gap-4">
                             <div className="w-10 h-10 rounded-full bg-blue-500/10 flex items-center justify-center text-blue-500 shadow-sm shadow-blue-500/5">
-                                <Linkedin size={18} className="opacity-80" />
+                                <Zap size={18} className="opacity-80" />
                             </div>
                             <div>
-                                <h5 className="text-sm font-bold text-text-primary">LinkedIn Company Page</h5>
+                                <h5 className="text-sm font-bold text-text-primary">Releases</h5>
                             </div>
                         </div>
                         <a
-                            href="https://www.linkedin.com/company/nativley-ai"
-                            onClick={(e) => handleOpenLink(e, "https://www.linkedin.com/company/nativley-ai")}
+                            href="https://github.com/NeuroMarshal/natively-cluely-ai-assistant/releases"
+                            onClick={(e) => handleOpenLink(e, "https://github.com/NeuroMarshal/natively-cluely-ai-assistant/releases")}
                             className="whitespace-nowrap px-4 py-2 bg-text-primary hover:bg-white/90 text-bg-main text-xs font-bold rounded-lg transition-all shadow hover:shadow-lg hover:-translate-y-0.5 active:translate-y-0 flex items-center gap-2"
                         >
-                            <Linkedin size={14} />
-                            Follow Page
+                            <Zap size={14} />
+                            View Builds
                         </a>
                     </div>
 
@@ -287,8 +287,8 @@ export const AboutSection: React.FC<AboutSectionProps> = () => {
                             </div>
                             <div className="flex items-center gap-4 pl-[60px]">
                                 <a
-                                    href="https://github.com/Natively-AI-assistant/natively-cluely-ai-assistant"
-                                    onClick={(e) => handleOpenLink(e, "https://github.com/Natively-AI-assistant/natively-cluely-ai-assistant")}
+                                    href="https://github.com/NeuroMarshal/natively-cluely-ai-assistant"
+                                    onClick={(e) => handleOpenLink(e, "https://github.com/NeuroMarshal/natively-cluely-ai-assistant")}
                                     className="text-text-tertiary hover:text-text-primary transition-colors"
                                     title="GitHub"
                                 >
@@ -325,8 +325,8 @@ export const AboutSection: React.FC<AboutSectionProps> = () => {
                     {/* 2. Star & Report */}
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                         <a
-                            href="https://github.com/Natively-AI-assistant/natively-cluely-ai-assistant"
-                            onClick={(e) => handleOpenLink(e, "https://github.com/Natively-AI-assistant/natively-cluely-ai-assistant")}
+                            href="https://github.com/NeuroMarshal/natively-cluely-ai-assistant"
+                            onClick={(e) => handleOpenLink(e, "https://github.com/NeuroMarshal/natively-cluely-ai-assistant")}
                             className="bg-bg-item-surface border border-border-subtle rounded-xl p-5 transition-all group flex items-center gap-4 h-full hover:bg-white/10"
                         >
                             <div className="w-10 h-10 rounded-lg bg-yellow-500/10 flex items-center justify-center text-yellow-500 shrink-0 group-hover:scale-110 transition-transform">
@@ -339,8 +339,8 @@ export const AboutSection: React.FC<AboutSectionProps> = () => {
                         </a>
 
                         <a
-                            href="https://github.com/Natively-AI-assistant/natively-cluely-ai-assistant/issues"
-                            onClick={(e) => handleOpenLink(e, "https://github.com/Natively-AI-assistant/natively-cluely-ai-assistant/issues")}
+                            href="https://github.com/NeuroMarshal/natively-cluely-ai-assistant/issues"
+                            onClick={(e) => handleOpenLink(e, "https://github.com/NeuroMarshal/natively-cluely-ai-assistant/issues")}
                             className="bg-bg-item-surface border border-border-subtle rounded-xl p-5 transition-all group flex items-center gap-4 h-full hover:bg-white/10"
                         >
                             <div className="w-10 h-10 rounded-lg bg-red-500/10 flex items-center justify-center text-red-500 shrink-0 group-hover:scale-110 transition-transform">

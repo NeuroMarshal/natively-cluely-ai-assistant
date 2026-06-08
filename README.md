@@ -1,7 +1,3 @@
-# [Sponsored by Recall AI - API for desktop recording](https://docs.recall.ai/docs/desktop-sdk?utm_source=github&utm_medium=sponsorship&utm_campaign=evinjohnn-natively-ai-assistant)
-
-If you’re looking for a hosted desktop recording API, consider checking out [Recall.ai](https://docs.recall.ai/docs/desktop-sdk?utm_source=github&utm_medium=sponsorship&utm_campaign=evinjohnn-natively-ai-assistant), an API that records Zoom, Google Meet, Microsoft Teams, in-person meetings, and more.
-
 <div align="center">
   <img src="assets/icon.png" width="150" alt="Natively AI Assistant Logo">
 
@@ -40,27 +36,19 @@ If you’re looking for a hosted desktop recording API, consider checking out [R
 <br/>
 
 [![License](https://img.shields.io/badge/License-AGPL--3.0-blue?style=flat-square)](LICENSE)
-[![Platform](https://img.shields.io/badge/Platform-macOS%20%7C%20Windows-blueviolet?style=flat-square)](https://github.com/Natively-AI-assistant/natively-cluely-ai-assistant/releases)
-[![Downloads](https://img.shields.io/github/downloads/evinjohnn/natively-cluely-ai-assistant/total?style=flat-square&color=success)](https://github.com/Natively-AI-assistant/natively-cluely-ai-assistant/releases)
+[![Platform](https://img.shields.io/badge/Platform-macOS%20%7C%20Windows-blueviolet?style=flat-square)](https://github.com/NeuroMarshal/natively-cluely-ai-assistant/releases)
+[![Downloads](https://img.shields.io/github/downloads/NeuroMarshal/natively-cluely-ai-assistant/total?style=flat-square&color=success)](https://github.com/NeuroMarshal/natively-cluely-ai-assistant/releases)
 ![Repo Views](https://img.shields.io/badge/Views-341k-orange?style=flat-square)
-[![Stars](https://img.shields.io/github/stars/evinjohnn/natively-cluely-ai-assistant?style=flat-square&color=gold)](https://github.com/Natively-AI-assistant/natively-cluely-ai-assistant)
+[![Stars](https://img.shields.io/github/stars/NeuroMarshal/natively-cluely-ai-assistant?style=flat-square&color=gold)](https://github.com/NeuroMarshal/natively-cluely-ai-assistant)
 ![Status](https://img.shields.io/badge/Status-active-success?style=flat-square)
-[![Telegram Chat](https://img.shields.io/badge/Telegram-Chat-229ED9?style=flat-square&logo=telegram&logoColor=white)](https://t.me/nativelyaichat)
-[![LinkedIn Company](https://img.shields.io/badge/LinkedIn-Company-0077B5?style=flat-square&logo=linkedin&logoColor=white)](https://www.linkedin.com/company/nativley-ai)
 
 > **Competitors charge $20–$149/month, store your data on their servers, and one already breached 83,000 users.** Natively costs $0, runs locally, and has never had a data breach. Your keys, your models, your machine.
 
 <p align="center">
-  <a href="https://natively.software">
-    <img src="https://img.shields.io/badge/Visit%20Website-22C55E?style=for-the-badge&logo=vercel&logoColor=white" />
-  </a>
-</p>
-
-<p align="center">
-  <a href="https://github.com/Natively-AI-assistant/natively-cluely-ai-assistant/releases/latest">
+  <a href="https://github.com/NeuroMarshal/natively-cluely-ai-assistant/releases/latest">
     <img src="https://img.shields.io/badge/Download-macOS-007AFF?style=for-the-badge&logo=apple&logoColor=white" />
   </a>
-  <a href="https://github.com/Natively-AI-assistant/natively-cluely-ai-assistant/releases/latest">
+  <a href="https://github.com/NeuroMarshal/natively-cluely-ai-assistant/releases/latest">
     <img src="https://img.shields.io/badge/Download-Windows-0078D4?style=for-the-badge&logo=windows&logoColor=white" />
   </a>
 </p>
@@ -128,7 +116,7 @@ While other tools act as simple API wrappers, Natively is a complete, native int
 
 Every star pushes Natively higher in GitHub search, helping developers and job seekers find a free, private alternative instead of paying $149/month for tools that store their data on someone else's server.
 
-[![Star Natively](https://img.shields.io/github/stars/evinjohnn/natively-cluely-ai-assistant?style=for-the-badge&color=gold&label=Star%20on%20GitHub)](https://github.com/Natively-AI-assistant/natively-cluely-ai-assistant)
+[![Star Natively](https://img.shields.io/github/stars/NeuroMarshal/natively-cluely-ai-assistant?style=for-the-badge&color=gold&label=Star%20on%20GitHub)](https://github.com/NeuroMarshal/natively-cluely-ai-assistant)
 
 </div>
 
@@ -276,9 +264,9 @@ Natively works as a **free, undetectable AI coding interview assistant** for sta
 
 <div align="center">
 
-[![Natively Website](https://img.shields.io/badge/Natively_Website-natively.software-22C55E?style=flat-square&logo=vercel&logoColor=white)](https://natively.software)
-[![Telegram Chat](https://img.shields.io/badge/Telegram_Chat-nativelyaichat-229ED9?style=flat-square&logo=telegram&logoColor=white)](https://t.me/nativelyaichat)
-[![LinkedIn Company](https://img.shields.io/badge/LinkedIn_Company-nativley--ai-0077B5?style=flat-square&logo=linkedin&logoColor=white)](https://www.linkedin.com/company/nativley-ai)
+[![Source Repository](https://img.shields.io/badge/Source-Repository-22C55E?style=flat-square&logo=github&logoColor=white)](https://github.com/NeuroMarshal/natively-cluely-ai-assistant)
+[![Issues](https://img.shields.io/badge/Issues-GitHub-229ED9?style=flat-square&logo=github&logoColor=white)](https://github.com/NeuroMarshal/natively-cluely-ai-assistant/issues)
+[![Releases](https://img.shields.io/badge/Releases-GitHub-0077B5?style=flat-square&logo=github&logoColor=white)](https://github.com/NeuroMarshal/natively-cluely-ai-assistant/releases)
 
 <br/>
 
@@ -499,7 +487,7 @@ Setup Summary:
 ### Clone the Repository
 
 ```bash
-git clone https://github.com/Natively-AI-assistant/natively-cluely-ai-assistant.git
+git clone https://github.com/NeuroMarshal/natively-cluely-ai-assistant.git
 cd natively-cluely-ai-assistant
 ```
 
@@ -904,11 +892,11 @@ Natively is a free, open-source alternative to:
 
 ## Star History
 
-<a href="https://star-history.com/#evinjohnn/natively-cluely-ai-assistant&Date">
+<a href="https://star-history.com/#NeuroMarshal/natively-cluely-ai-assistant&Date">
  <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=evinjohnn/natively-cluely-ai-assistant&type=Date&theme=dark" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=evinjohnn/natively-cluely-ai-assistant&type=Date" />
-   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=evinjohnn/natively-cluely-ai-assistant&type=Date" />
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=NeuroMarshal/natively-cluely-ai-assistant&type=Date&theme=dark" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=NeuroMarshal/natively-cluely-ai-assistant&type=Date" />
+   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=NeuroMarshal/natively-cluely-ai-assistant&type=Date" />
  </picture>
 </a>
 

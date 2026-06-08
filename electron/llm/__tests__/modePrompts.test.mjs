@@ -171,27 +171,25 @@ test('code hint examples avoid named problems and em dashes', () => {
   assert.doesNotMatch(examples, /—/);
 });
 
-// ── SERVER ROUTING CONTRACT ──────────────────────────────────────────────────
-// The Natively server (natively-api/lib/flashModelPicker.js) routes the live
-// interview modes to gemini-3.5-flash by regex-matching this exact phrase in the
-// system prompt the client sends. If a prompt edit drops/rewords the phrase,
-// those modes silently fall back to flash-lite. This guard fails LOUDLY on drift.
-// Keep in sync with INTERVIEW_MODE_RE in natively-api/lib/flashModelPicker.js.
-const SERVER_INTERVIEW_MODE_RE = /spoken voice in a live (?:job|technical) interview/i;
+// ── LOCAL INTERVIEW PROMPT CONTRACT ───────────────────────────────────────────
+// The local app still relies on this phrase to keep interview prompts distinct
+// from generic meetings. If a prompt edit drops/rewords it, the model selection
+// and regression fixtures can drift silently, so this guard stays loud.
+const LOCAL_INTERVIEW_MODE_RE = /spoken voice in a live (?:job|technical) interview/i;
 
-test('SERVER-ROUTING: looking-for-work prompt contains the interview-mode detector phrase', () => {
-  assert.match(prompts.MODE_LOOKING_FOR_WORK_PROMPT, SERVER_INTERVIEW_MODE_RE,
-    'MODE_LOOKING_FOR_WORK_PROMPT must contain "spoken voice in a live job interview" — the server (flashModelPicker.js) keys interview→3.5-flash routing off it. Update INTERVIEW_MODE_RE on BOTH sides if you change the wording.');
+test('LOCAL-ROUTING: looking-for-work prompt contains the interview-mode detector phrase', () => {
+  assert.match(prompts.MODE_LOOKING_FOR_WORK_PROMPT, LOCAL_INTERVIEW_MODE_RE,
+    'MODE_LOOKING_FOR_WORK_PROMPT must contain "spoken voice in a live job interview". Update the local prompt contract if you intentionally change the wording.');
 });
 
-test('SERVER-ROUTING: technical-interview prompt contains the interview-mode detector phrase', () => {
-  assert.match(prompts.MODE_TECHNICAL_INTERVIEW_PROMPT, SERVER_INTERVIEW_MODE_RE,
-    'MODE_TECHNICAL_INTERVIEW_PROMPT must contain "spoken voice in a live technical interview" — the server routes interview→3.5-flash off it.');
+test('LOCAL-ROUTING: technical-interview prompt contains the interview-mode detector phrase', () => {
+  assert.match(prompts.MODE_TECHNICAL_INTERVIEW_PROMPT, LOCAL_INTERVIEW_MODE_RE,
+    'MODE_TECHNICAL_INTERVIEW_PROMPT must contain "spoken voice in a live technical interview".');
 });
 
-test('SERVER-ROUTING: non-interview modes must NOT match the detector phrase (no false-positive routing)', () => {
+test('LOCAL-ROUTING: non-interview modes must NOT match the detector phrase', () => {
   for (const key of ['general', 'sales', 'recruiting', 'team-meet', 'lecture']) {
-    assert.doesNotMatch(MODE_PROMPTS[key], SERVER_INTERVIEW_MODE_RE,
-      `${key} prompt must NOT contain the interview detector phrase, or it would wrongly route to 3.5-flash.`);
+    assert.doesNotMatch(MODE_PROMPTS[key], LOCAL_INTERVIEW_MODE_RE,
+      `${key} prompt must NOT contain the interview detector phrase.`);
   }
 });

@@ -13,20 +13,22 @@ async function loadRouter() {
   return import(pathToFileURL(routerPath).href);
 }
 
-test('embeddings scope denial routes through Ollama before local fallback', () => {
+test('embeddings are local-only: resolver never constructs a cloud or Ollama provider', () => {
   const src = read('electron/rag/EmbeddingProviderResolver.ts');
 
-  assert.match(src, /error instanceof ProviderScopeError/);
-  assert.match(src, /\[ScopeFallback\] embeddings denied for cloud; routing to Ollama/);
-  assert.match(src, /candidates\.push\(new OllamaEmbeddingProvider/);
-  assert.match(src, /if \(!embeddingsDenied\) \{\s*candidates\.push\(new LocalEmbeddingProvider\(\)\)/);
+  // Local-first fork: the knowledge base is embedded fully on-device, so there is
+  // no cloud embedding path to gate. The resolver must NOT build any cloud/Ollama
+  // embedding provider — only the selectable on-device model.
+  assert.doesNotMatch(src, /new OpenAIEmbeddingProvider/);
+  assert.doesNotMatch(src, /new GeminiEmbeddingProvider/);
+  assert.doesNotMatch(src, /new OllamaEmbeddingProvider/);
+  assert.match(src, /new LocalEmbeddingProvider/);
 });
 
-test('embeddings scope denial gracefully omits embeddings when Ollama is unavailable', () => {
+test('embeddings resolver selects the on-device model with bundled fallback', () => {
   const src = read('electron/rag/EmbeddingProviderResolver.ts');
 
-  assert.match(src, /\[ScopeFallback\] embeddings denied; Ollama unavailable, using bundled local embedding model/);
-  assert.match(src, /return new LocalEmbeddingProvider\(\)/);
+  assert.match(src, /resolveActiveEmbeddingModelId/);
 });
 
 test('transcript scope denial routes full context to Ollama when available', () => {
