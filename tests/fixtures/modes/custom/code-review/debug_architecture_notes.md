@@ -9,7 +9,7 @@
 
 ## Ownership
 - Modes Manager owns the mode catalog, reference files, and the active mode prompt suffix.
-- ModeContextRetriever owns lexical retrieval; ModeHybridRetriever owns hybrid lexical + vector retrieval with telemetry on fallback.
+- ModeContextRetriever owns lexical retrieval; ModeHybridRetriever owns hybrid lexical + vector retrieval with diagnostics on fallback.
 - WhatToAnswerLLM must read the active mode suffix freshly per call because the active mode can be switched mid-session.
 - WhatToAnswerLLM must be constructed with a live LLMHelper dependency before `generateStream` is called. Mode hot-swap may refresh ModesManager, but it must not drop provider routing dependencies.
 

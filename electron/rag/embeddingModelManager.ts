@@ -14,6 +14,7 @@
 
 import path from 'path';
 import fs from 'fs';
+import { hasRequiredExternalData } from '../audio/whisper/modelManager';
 
 export type EmbeddingPooling = 'mean' | 'cls';
 
@@ -42,6 +43,11 @@ export interface EmbeddingModelInfo {
   bundled?: boolean;
   /** Live status, filled by getAvailableEmbeddingModels(). */
   status?: 'available' | 'missing' | 'downloading' | 'error';
+  partial?: boolean;
+  partialBytes?: number;
+  downloadedBytes?: number;
+  totalBytes?: number;
+  currentFile?: string;
 }
 
 // The bundled offline-guarantee model. Shipped under resources/models so the
@@ -132,16 +138,26 @@ export function isKnownEmbeddingModel(id: unknown): id is string {
 export function isEmbeddingModelCached(id: string): boolean {
   const entry = getEmbeddingModelEntry(id);
 
-  const hasOnnx = (modelDir: string): boolean => {
-    if (!fs.existsSync(modelDir)) return false;
-    const onnxDir = path.join(modelDir, 'onnx');
+  // A model counts as cached only when at least one .onnx file is COMPLETE —
+  // i.e. any external `.onnx_data` weights it references are present and full
+  // size. Large fp32 exports (bge-m3, e5) keep weights in a separate
+  // .onnx_data; an interrupted download leaves the tiny graph stub without it,
+  // which would otherwise be reported "available" and then fail at query time.
+  const hasCompleteOnnxIn = (dir: string): boolean => {
     try {
-      if (fs.existsSync(onnxDir) && fs.readdirSync(onnxDir).some(f => f.endsWith('.onnx'))) return true;
-      // Some exports keep the .onnx at the model root.
-      return fs.readdirSync(modelDir).some(f => f.endsWith('.onnx'));
+      return fs.readdirSync(dir).some(
+        f => f.endsWith('.onnx') && hasRequiredExternalData(path.join(dir, f)),
+      );
     } catch {
       return false;
     }
+  };
+
+  const hasOnnx = (modelDir: string): boolean => {
+    if (!fs.existsSync(modelDir)) return false;
+    const onnxDir = path.join(modelDir, 'onnx');
+    // onnx/ subfolder is the common layout; some exports keep the .onnx at root.
+    return hasCompleteOnnxIn(onnxDir) || hasCompleteOnnxIn(modelDir);
   };
 
   // Bundled models ship in resources/models and are always considered available.
@@ -152,10 +168,35 @@ export function isEmbeddingModelCached(id: string): boolean {
 
 /** Catalog with live filesystem status. */
 export function getAvailableEmbeddingModels(): EmbeddingModelInfo[] {
-  return MODEL_CATALOG.map(m => ({
-    ...m,
-    status: isEmbeddingModelCached(m.id) ? 'available' : 'missing',
-  }));
+  return MODEL_CATALOG.map(m => {
+    const available = isEmbeddingModelCached(m.id);
+    const partialBytes = m.bundled ? 0 : directorySize(path.join(getEmbeddingModelsDir(), m.id));
+    return {
+      ...m,
+      status: available ? 'available' : 'missing',
+      partial: !available && partialBytes > 0,
+      partialBytes,
+    };
+  });
+}
+
+function directorySize(root: string): number {
+  if (!fs.existsSync(root)) return 0;
+  let total = 0;
+  const stack = [root];
+  while (stack.length > 0) {
+    const current = stack.pop()!;
+    try {
+      for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+        const fullPath = path.join(current, entry.name);
+        if (entry.isDirectory()) stack.push(fullPath);
+        else if (entry.isFile()) total += fs.statSync(fullPath).size;
+      }
+    } catch {
+      // Download workers may replace temporary files while status is read.
+    }
+  }
+  return total;
 }
 
 /** Delete a downloaded model. Bundled models are protected (never deleted). */

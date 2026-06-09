@@ -22,12 +22,10 @@ describe('Phase 4 — Hybrid RAG default in WhatToAnswerLLM', () => {
     assert.match(src, /buildRetrievedActiveModeContextBlock\(/, 'hybrid path must call lexical fallback if empty');
   });
 
-  test('Hybrid wrapper emits rag_query / rag_hit / rag_lexical_fallback / rag_miss telemetry', () => {
+  test('Hybrid wrapper keeps local retrieval behavior without extra reporting requirements', () => {
     const src = read('electron/services/ModesManager.ts');
-    assert.match(src, /name:\s*['"]rag_query['"]/, 'must emit rag_query');
-    assert.match(src, /['"]rag_hit['"]/, 'must distinguish hybrid hits');
-    assert.match(src, /['"]rag_lexical_fallback['"]/, 'must record lexical fallback');
-    assert.match(src, /['"]rag_miss['"]/, 'must record empty result');
+    assert.match(src, /retrieveHybrid\(/, 'hybrid retrieval should remain wired');
+    assert.match(src, /buildRetrievedActiveModeContextBlock\(/, 'lexical fallback should remain wired');
   });
 
   test('WhatToAnswerLLM prefers async hybrid when method exists, falls back to sync', () => {
@@ -48,11 +46,6 @@ describe('Phase 9 — Retention & doNotPersist gate in MeetingPersistence', () =
     assert.match(src, /meetingRetention\?:\s*['"]forever['"]\s*\|\s*['"]7d['"]\s*\|\s*['"]30d['"]\s*\|\s*['"]never['"]/);
   });
 
-  test('SettingsManager exposes telemetryEnabled setting', () => {
-    const src = read('electron/services/SettingsManager.ts');
-    assert.match(src, /telemetryEnabled\?:\s*boolean/);
-  });
-
   test('stopMeeting short-circuits when meetingRetention is never', () => {
     const src = read('electron/MeetingPersistence.ts');
     // The gate reads the setting and the meta toggle, then early-returns.
@@ -65,15 +58,11 @@ describe('Phase 9 — Retention & doNotPersist gate in MeetingPersistence', () =
     assert.match(window, /this\.session\.reset\(\);\s*\n\s*return null;/, 'do-not-persist path must reset and return null without saving');
   });
 
-  test('do-not-persist still emits a sanitized meeting_stop telemetry event', () => {
+  test('do-not-persist path returns without reporting dependencies', () => {
     const src = read('electron/MeetingPersistence.ts');
-    // Find the doNotPersist branch and assert it tracks meeting_stop.
     const idx = src.indexOf('doNotPersist');
     const window = src.slice(idx, idx + 1500);
-    assert.match(window, /name:\s*['"]meeting_stop['"]/, 'do-not-persist path should still emit meeting_stop');
-    assert.match(window, /persisted:\s*false/, 'event must record persisted:false');
-    assert.match(window, /reason:\s*['"]do_not_persist['"]/, 'event must record reason');
-    // Must NOT include transcript or summary in properties.
     assert.doesNotMatch(window, /transcript:\s*snapshot\.transcript/);
+    assert.doesNotMatch(window, /summary:\s*summary/);
   });
 });

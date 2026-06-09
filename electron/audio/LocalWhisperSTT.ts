@@ -14,16 +14,16 @@
  *   profile (see resolveStreamingProfile):
  *
  *   Whisper / Distil-Whisper path (slow, batch-architected models):
- *     - Tick every 1500ms while a segment is open (after 800ms of audio)
+ *     - Tick every 1000ms while a segment is open (after 600ms of audio)
  *     - Apply LocalAgreement-2: only commit text where two overlapping
  *       inferences agree (longest common prefix). Stabilizes flicker.
  *     - First interim emit ~1.5–2.5s after speech starts.
  *
- *   Moonshine path (streaming-native, deterministic, ~100ms inference):
- *     - Tick every 750ms after just 400ms of audio
+ *   Moonshine path (streaming-native, deterministic):
+ *     - Tick every 500ms after just 300ms of audio
  *     - Skip LA-2 — the model's output is already stable; emit each
  *       cleaned partial directly.
- *     - First interim emit ~400–600ms after speech starts.
+ *     - First interim arrives as soon as the first inference completes.
  *
  *   When VAD closes the segment (or hits MAX_SEGMENT_MS for a soft commit):
  *     - Run a final pass on the full segment
@@ -33,16 +33,23 @@
 
 import { EventEmitter } from 'events';
 import { Worker } from 'worker_threads';
+import { fork, type ChildProcess } from 'child_process';
 import { resampleToF32 } from './whisper/audioResampler';
 import { VadProcessor } from './whisper/vadProcessor';
 import { filterHallucination } from './whisper/hallucinationFilter';
-import { configureTransformersCache } from './whisper/modelManager';
+import { configureTransformersCache, getWhisperModelName } from './whisper/modelManager';
 import { modelPreloader } from './whisper/modelPreloader';
 import { buildWorkerInitMessage } from './whisper/inferenceConfig';
 import { resolveWhisperWorkerPath } from './whisper/workerPathResolver';
 import type { WorkerOutMessage } from './whisper/types';
 
+type WhisperWorkerProcess = Worker | ChildProcess;
+
 export class LocalWhisperSTT extends EventEmitter {
+    private static readonly workerInitQueue: LocalWhisperSTT[] = [];
+    private static workerInitInProgress = false;
+    private static nativeGpuCrashedThisRun = false;
+
     private readonly modelId: string;
     private inputSampleRate = 48000;
     private language = 'auto';
@@ -56,7 +63,7 @@ export class LocalWhisperSTT extends EventEmitter {
     // worker IPC. ~8KB is well above 224 Whisper tokens (~3-4 chars/token).
     private static readonly PROMPT_MAX_CHARS = 8000;
 
-    // ── Latency telemetry ──────────────────────────────────────────────
+    // ── Latency metrics ────────────────────────────────────────────────
     // Perceived latency tracking. Two metrics:
     //   firstPartial = ms from VAD opening a segment → first agreed/committed
     //                  prefix emit (LocalAgreement-2 needs two streaming ticks
@@ -80,7 +87,12 @@ export class LocalWhisperSTT extends EventEmitter {
     // Optional channel label ('mic' / 'system') — disambiguates log lines
     // when both LocalWhisperSTT instances run the same model.
     private channelLabel = '';
-    private worker: Worker | null = null;
+    private worker: WhisperWorkerProcess | null = null;
+    private currentWorkerUsesNativeGpu = false;
+    private currentWorkerAllowsCpuFallback = false;
+    private forceCpuForThisSession = false;
+    private workerInitQueued = false;
+    private ownsWorkerInitSlot = false;
     private vad: VadProcessor | null = null;
     private isActive = false;
     private taskCounter = 0;
@@ -96,10 +108,9 @@ export class LocalWhisperSTT extends EventEmitter {
     // stops sending audio before VAD's hangover completes.
     private gapFlushTimer: ReturnType<typeof setTimeout> | null = null;
     private static readonly GAP_FLUSH_MS = 400;
-    // 5s grace timer for the previous worker to finish in-flight transcribes
-    // before we terminate it. Tracked so rapid stop/start cycles or app quit
-    // don't pin the event loop with stale termination timers.
-    private workerTerminateTimer: ReturnType<typeof setTimeout> | null = null;
+    // Every retiring worker needs its own grace timer. A single timer leaks
+    // older GPU processes when meetings are restarted within the grace period.
+    private readonly workerTerminateTimers = new Set<ReturnType<typeof setTimeout>>();
 
     // Streaming inference loop state.
     // Self-chaining setTimeout (not setInterval) so the delay can adapt at
@@ -147,6 +158,10 @@ export class LocalWhisperSTT extends EventEmitter {
         console.log(`[LocalWhisperSTT] streaming profile for ${modelId}: interval=${profile.intervalMs}ms minAudio=${profile.minAudioMs}ms skipAgreement=${profile.skipAgreement}`);
     }
 
+    public static resetNativeGpuFallback(): void {
+        LocalWhisperSTT.nativeGpuCrashedThisRun = false;
+    }
+
     /**
      * Per-model streaming-loop profile. Faster, more aggressive parameters
      * for streaming-class models (Moonshine) — they finish each pass in
@@ -157,12 +172,10 @@ export class LocalWhisperSTT extends EventEmitter {
         // Loose match — covers `onnx-community/moonshine-*`, `usefulsensors/
         // moonshine-*`, and any future fork that keeps "moonshine" in the
         // path. Falls back to Whisper-safe defaults on no match.
-        // TODO: validate the 750/400 numbers against measured first-partial
-        // p50 once a Moonshine model is downloaded; expect <600ms.
         if (modelId.toLowerCase().includes('moonshine')) {
-            return { intervalMs: 750, minAudioMs: 400, skipAgreement: true };
+            return { intervalMs: 500, minAudioMs: 300, skipAgreement: true };
         }
-        return { intervalMs: 1500, minAudioMs: 800, skipAgreement: false };
+        return { intervalMs: 1000, minAudioMs: 600, skipAgreement: false };
     }
 
     setSampleRate(rate: number): void { this.inputSampleRate = rate; }
@@ -196,7 +209,7 @@ export class LocalWhisperSTT extends EventEmitter {
     private maybePushPromptToWorker(): void {
         if (!this.worker || !this.workerReady) return; // pushed in flushPending after ready
         if (this.contextPrompt === this.contextPromptSentToWorker) return;
-        this.worker.postMessage({ type: 'setPrompt', prompt: this.contextPrompt });
+        this.postToWorker({ type: 'setPrompt', prompt: this.contextPrompt });
         this.contextPromptSentToWorker = this.contextPrompt;
     }
 
@@ -264,7 +277,7 @@ export class LocalWhisperSTT extends EventEmitter {
             if (committed) this.dispatchFinal(committed.samples);
         }
 
-        // Telemetry: re-stamp segmentOpenedAt whenever the open VAD segment
+        // Re-stamp segmentOpenedAt whenever the open VAD segment
         // is a different one than we last tracked. ID-based detection
         // correctly handles open+close-in-one-push (two new segments seen
         // within a single write) and close+open-in-one-push (id rises but
@@ -359,7 +372,7 @@ export class LocalWhisperSTT extends EventEmitter {
         const taskId = `s${++this.taskCounter}`;
         this.streamingTaskId = taskId;
         const copy = open.samples.slice();
-        this.worker.postMessage(
+        this.postToWorker(
             { type: 'transcribe', taskId, audio: copy, language: this.language, streaming: true },
             [copy.buffer]
         );
@@ -447,7 +460,7 @@ export class LocalWhisperSTT extends EventEmitter {
         }
     }
 
-    /* ──────────────── Latency telemetry helpers ──────────────── */
+    /* ──────────────── Latency metric helpers ──────────────── */
 
     private recordLatency(arr: number[], ms: number): void {
         arr.push(ms);
@@ -539,11 +552,47 @@ export class LocalWhisperSTT extends EventEmitter {
     private sendTranscribe(audio: Float32Array, streaming: boolean): void {
         if (!this.worker) return;
         const taskId = `${streaming ? 's' : 't'}${++this.taskCounter}`;
+        if (!streaming) {
+            this.drainingFinalsInFlight++;
+        }
         const copy = audio.slice();
-        this.worker.postMessage(
+        this.postToWorker(
             { type: 'transcribe', taskId, audio: copy, language: this.language, streaming },
             [copy.buffer]
         );
+    }
+
+    private postToWorker(message: any, transferList?: any[]): void {
+        const worker = this.worker;
+        if (!worker) return;
+        try {
+            if (LocalWhisperSTT.isChildProcess(worker)) {
+                if (!worker.connected || typeof worker.send !== 'function') {
+                    throw new Error('Whisper child process IPC is not connected');
+                }
+                worker.send(message);
+                return;
+            }
+            worker.postMessage(message, transferList as any);
+        } catch (e) {
+            // A worker can disconnect/terminate between the readiness check and
+            // this send (isolated GPU child crash, app quit mid-drain). Never let
+            // that throw through the caller: stop()/flushPending/dispatchFinal
+            // must finish their teardown (otherwise beginWorkerTermination is
+            // skipped and the worker + its grace timer leak), and the streaming
+            // loop must not wedge waiting on a partial that will never arrive.
+            console.warn('[LocalWhisperSTT] postToWorker failed (worker unavailable):', (e as Error)?.message);
+            if (message?.type === 'transcribe' && message?.streaming) {
+                this.streamingTaskInFlight = false;
+                this.streamingTaskId = null;
+            } else if (message?.type === 'transcribe') {
+                this.completeFinalTask(message.taskId);
+            }
+        }
+    }
+
+    private static isChildProcess(worker: WhisperWorkerProcess): worker is ChildProcess {
+        return typeof (worker as ChildProcess).send === 'function' && typeof (worker as Worker).postMessage !== 'function';
     }
 
     /* ──────────────── Worker lifecycle ──────────────── */
@@ -554,23 +603,120 @@ export class LocalWhisperSTT extends EventEmitter {
             console.log(`[LocalWhisperSTT] Using preloaded warm worker for ${this.modelId}`);
             this.worker = warm;
             this.workerReady = true;
+            this.currentWorkerUsesNativeGpu = LocalWhisperSTT.isChildProcess(warm);
+            this.currentWorkerAllowsCpuFallback = false;
             this.attachWorkerListeners();
             this.flushPending();
-        } else {
-            console.log(`[LocalWhisperSTT] Cold-starting worker for ${this.modelId}`);
-            const workerPath = resolveWhisperWorkerPath();
-            this.worker = new Worker(workerPath);
-            this.attachWorkerListeners();
-            this.worker.postMessage(buildWorkerInitMessage(this.modelId));
+            return;
         }
+
+        if (this.workerInitQueued || this.ownsWorkerInitSlot) return;
+        this.workerInitQueued = true;
+        LocalWhisperSTT.workerInitQueue.push(this);
+        console.log(
+            `[LocalWhisperSTT] Queued worker initialization for ${this.modelId}` +
+            (this.channelLabel ? ` (${this.channelLabel})` : ''),
+        );
+        LocalWhisperSTT.pumpWorkerInitQueue();
+    }
+
+    private static pumpWorkerInitQueue(): void {
+        if (LocalWhisperSTT.workerInitInProgress) return;
+
+        let next: LocalWhisperSTT | undefined;
+        while (LocalWhisperSTT.workerInitQueue.length > 0) {
+            const candidate = LocalWhisperSTT.workerInitQueue.shift()!;
+            candidate.workerInitQueued = false;
+            if (candidate.isActive && !candidate.worker) {
+                next = candidate;
+                break;
+            }
+        }
+
+        if (!next) return;
+        LocalWhisperSTT.workerInitInProgress = true;
+        next.ownsWorkerInitSlot = true;
+        next.startColdWorker();
+    }
+
+    private startColdWorker(): void {
+        if (!this.isActive) {
+            this.releaseWorkerInitSlot();
+            return;
+        }
+
+        console.log(
+            `[LocalWhisperSTT] Cold-starting worker for ${this.modelId}` +
+            (this.channelLabel ? ` (${this.channelLabel})` : ''),
+        );
+        try {
+            const workerPath = resolveWhisperWorkerPath();
+            const initMessage = buildWorkerInitMessage(this.modelId, {
+                forceCpu: this.forceCpuForThisSession || LocalWhisperSTT.nativeGpuCrashedThisRun,
+            });
+            this.currentWorkerUsesNativeGpu = initMessage.runtimeBackend === 'webgpu';
+            this.currentWorkerAllowsCpuFallback = initMessage.allowCpuFallback;
+            this.worker = this.createWorkerProcess(workerPath, this.shouldIsolateNativeGpuWorker());
+            this.attachWorkerListeners();
+            this.postToWorker(initMessage);
+        } catch (error) {
+            this.worker = null;
+            this.currentWorkerUsesNativeGpu = false;
+            this.currentWorkerAllowsCpuFallback = false;
+            this.releaseWorkerInitSlot();
+            this.emit('error', error);
+        }
+    }
+
+    private shouldIsolateNativeGpuWorker(): boolean {
+        // Native WebGPU/Dawn lives outside V8. Keep it in a child process so a
+        // driver-level crash cannot take down the Electron main process.
+        return this.currentWorkerUsesNativeGpu;
+    }
+
+    private createWorkerProcess(workerPath: string, isolateNativeGpu: boolean): WhisperWorkerProcess {
+        if (!isolateNativeGpu) return new Worker(workerPath);
+
+        const forkOptions = {
+            env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+            serialization: 'advanced',
+            stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+            windowsHide: true,
+        } as any;
+        const child = fork(workerPath, [], forkOptions);
+        child.stdout?.on('data', (chunk) => this.logChildOutput('log', chunk));
+        child.stderr?.on('data', (chunk) => this.logChildOutput('warn', chunk));
+        return child;
+    }
+
+    private logChildOutput(level: 'log' | 'warn', chunk: Buffer): void {
+        const text = chunk.toString().trimEnd();
+        if (!text) return;
+        for (const line of text.split(/\r?\n/)) {
+            if (line.trim()) console[level](`[WhisperWorker:child] ${line}`);
+        }
+    }
+
+    private releaseWorkerInitSlot(): void {
+        if (!this.ownsWorkerInitSlot) return;
+        this.ownsWorkerInitSlot = false;
+        LocalWhisperSTT.workerInitInProgress = false;
+        setImmediate(() => LocalWhisperSTT.pumpWorkerInitQueue());
     }
 
     private attachWorkerListeners(): void {
         if (!this.worker) return;
+        const attachedWorker = this.worker;
 
-        this.worker.on('message', (msg: WorkerOutMessage) => {
+        (attachedWorker as any).on('message', (msg: WorkerOutMessage) => {
             if (msg.type === 'ready') {
                 this.workerReady = true;
+                this.currentWorkerUsesNativeGpu = msg.activeDevice === 'webgpu';
+                this.currentWorkerAllowsCpuFallback = false;
+                console.log(
+                    `[LocalWhisperSTT] Worker ready for ${this.modelId}: requested=${msg.requestedDevice ?? 'unknown'} active=${msg.activeDevice ?? 'unknown'}`,
+                );
+                this.releaseWorkerInitSlot();
                 this.flushPending();
                 return;
             }
@@ -605,20 +751,11 @@ export class LocalWhisperSTT extends EventEmitter {
                 // the segment). Next write() that opens a fresh VAD segment will
                 // re-stamp via the segment-id check.
                 this.segmentOpenedAt = 0;
-                if (this.isDrainingFinals) {
-                    this.drainingFinalsInFlight = Math.max(0, this.drainingFinalsInFlight - 1);
-                    if (this.drainingFinalsInFlight === 0 && this.worker) {
-                        this.beginWorkerTermination(this.worker);
-                    }
-                }
+                this.completeFinalTask(msg.taskId);
             } else if (msg.type === 'error') {
                 console.error('[LocalWhisperSTT] Worker error:', msg.message);
-                if (this.isDrainingFinals && msg.taskId?.startsWith('t')) {
-                    this.drainingFinalsInFlight = Math.max(0, this.drainingFinalsInFlight - 1);
-                    if (this.drainingFinalsInFlight === 0 && this.worker) {
-                        this.beginWorkerTermination(this.worker);
-                    }
-                }
+                if (!this.workerReady) this.releaseWorkerInitSlot();
+                this.completeFinalTask(msg.taskId);
                 // If the failed task was the in-flight streaming one, unblock
                 // the loop so the next tick can fire.
                 if (msg.taskId && msg.taskId === this.streamingTaskId) {
@@ -629,14 +766,86 @@ export class LocalWhisperSTT extends EventEmitter {
                     this.streamingNextDelayMs = this.streamingIntervalBaseMs;
                 }
                 if (msg.message.includes('Failed to load model')) {
-                    this.emit('error', new Error(
-                        'Local Whisper model not found. Please download a model in Settings → Audio.'
-                    ));
+                    this.pendingAudio = [];
+                    this.stopStreamingLoop();
+                    this.resetAgreementState();
+                    const shouldRetryOnCpu =
+                        msg.kind === 'runtime' &&
+                        this.currentWorkerUsesNativeGpu &&
+                        this.currentWorkerAllowsCpuFallback &&
+                        this.isActive;
+                    const failedWorker = this.worker;
+                    if (failedWorker) this.beginWorkerTermination(failedWorker);
+                    if (shouldRetryOnCpu) {
+                        console.warn(
+                            `[LocalWhisperSTT] WebGPU failed for ${this.modelId}; starting a clean CPU worker`,
+                        );
+                        LocalWhisperSTT.nativeGpuCrashedThisRun = true;
+                        this.forceCpuForThisSession = true;
+                        this.spawnWorker();
+                        return;
+                    }
+                    const modelName = getWhisperModelName(this.modelId);
+                    const error = new Error(
+                        `Model failed to load: ${modelName}`
+                    ) as Error & { code?: string; modelId?: string };
+                    error.code = 'LOCAL_WHISPER_MODEL_LOAD_FAILED';
+                    error.modelId = this.modelId;
+                    this.emit('error', error);
                 }
             }
         });
 
-        this.worker.on('error', (err) => this.emit('error', err));
+        (attachedWorker as any).on('error', (err: Error) => {
+            this.releaseWorkerInitSlot();
+            this.emit('error', err);
+        });
+        (attachedWorker as any).on('exit', (code: number | null, signal: string | null) => {
+            const crashed =
+                code !== 0 &&
+                signal !== 'SIGTERM' &&
+                this.currentWorkerUsesNativeGpu &&
+                attachedWorker === this.worker;
+
+            if (crashed && this.isActive) {
+                const codeText = code === 3221225477 ? '0xC0000005' : String(code);
+                const shouldRetryOnCpu = this.currentWorkerAllowsCpuFallback;
+                this.worker = null;
+                this.workerReady = false;
+                this.currentWorkerUsesNativeGpu = false;
+                this.currentWorkerAllowsCpuFallback = false;
+                this.streamingTaskInFlight = false;
+                this.streamingTaskId = null;
+                this.releaseWorkerInitSlot();
+                if (shouldRetryOnCpu) {
+                    console.warn(`[LocalWhisperSTT] Native WebGPU worker crashed (${codeText}); falling back to CPU for this app run`);
+                    LocalWhisperSTT.nativeGpuCrashedThisRun = true;
+                    this.forceCpuForThisSession = true;
+                    this.spawnWorker();
+                } else {
+                    const error = new Error(`WebGPU worker crashed (${codeText})`) as Error & { code?: string };
+                    error.code = 'LOCAL_WEBGPU_RUNTIME_CRASHED';
+                    this.emit('error', error);
+                }
+                return;
+            }
+
+            if (attachedWorker === this.worker) {
+                this.worker = null;
+                this.workerReady = false;
+                this.currentWorkerUsesNativeGpu = false;
+                this.currentWorkerAllowsCpuFallback = false;
+            }
+            this.releaseWorkerInitSlot();
+        });
+    }
+
+    private completeFinalTask(taskId?: string): void {
+        if (!taskId?.startsWith('t')) return;
+        this.drainingFinalsInFlight = Math.max(0, this.drainingFinalsInFlight - 1);
+        if (this.isDrainingFinals && this.drainingFinalsInFlight === 0 && this.worker) {
+            this.beginWorkerTermination(this.worker);
+        }
     }
 
     private flushPending(): void {
@@ -651,9 +860,11 @@ export class LocalWhisperSTT extends EventEmitter {
         }
     }
 
-    private beginWorkerTermination(w: Worker): void {
+    private beginWorkerTermination(w: WhisperWorkerProcess): void {
         this.worker = null;
         this.workerReady = false;
+        this.currentWorkerUsesNativeGpu = false;
+        this.currentWorkerAllowsCpuFallback = false;
         this.isDrainingFinals = false;
         this.drainingFinalsInFlight = 0;
         // Reset the sent-prompt tracker: a future spawnWorker call will get a
@@ -661,13 +872,20 @@ export class LocalWhisperSTT extends EventEmitter {
         this.contextPromptSentToWorker = '';
         w.removeAllListeners('message');
         w.removeAllListeners('error');
-        if (this.workerTerminateTimer) clearTimeout(this.workerTerminateTimer);
         const t = setTimeout(() => {
-            this.workerTerminateTimer = null;
-            w.terminate();
+            this.workerTerminateTimers.delete(t);
+            this.terminateWorkerProcess(w);
         }, 5000);
         // unref so the timer doesn't pin the Node event loop on app quit.
         (t as any).unref?.();
-        this.workerTerminateTimer = t;
+        this.workerTerminateTimers.add(t);
+    }
+
+    private terminateWorkerProcess(worker: WhisperWorkerProcess): void {
+        if (LocalWhisperSTT.isChildProcess(worker)) {
+            if (!worker.killed) worker.kill();
+            return;
+        }
+        void worker.terminate();
     }
 }

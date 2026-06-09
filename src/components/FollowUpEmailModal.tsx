@@ -63,7 +63,7 @@ const FollowUpEmailModal: React.FC<FollowUpEmailModalProps> = ({ isOpen, onClose
             // Try Calendar
             if (meeting.calendarEventId) {
                 // @ts-ignore
-                const attendees = await window.electronAPI?.invoke('get-calendar-attendees', meeting.calendarEventId);
+                const attendees = await window.electronAPI?.getCalendarAttendees?.(meeting.calendarEventId);
                 if (attendees && attendees.length > 0) {
                     loadedRecipientEmail = attendees[0].email;
                     if (attendees[0].name) loadedRecipientName = attendees[0].name.split(' ')[0];
@@ -73,7 +73,7 @@ const FollowUpEmailModal: React.FC<FollowUpEmailModalProps> = ({ isOpen, onClose
             // Fallback: Transcript
             if (!loadedRecipientEmail && meeting.transcript) {
                 // @ts-ignore
-                const extracted = await window.electronAPI?.invoke('extract-emails-from-transcript', meeting.transcript);
+                const extracted = await window.electronAPI?.extractEmailsFromTranscript?.(meeting.transcript);
                 if (extracted && extracted.length > 0) {
                     loadedRecipientEmail = extracted[0];
                 }
@@ -106,7 +106,7 @@ const FollowUpEmailModal: React.FC<FollowUpEmailModalProps> = ({ isOpen, onClose
             };
 
             // @ts-ignore
-            const generatedBody = await window.electronAPI?.invoke('generate-followup-email', input);
+            const generatedBody = await window.electronAPI?.generateFollowupEmail?.(input);
             if (generatedBody) {
                 setEmailBody(generatedBody);
             }
@@ -125,13 +125,13 @@ const FollowUpEmailModal: React.FC<FollowUpEmailModalProps> = ({ isOpen, onClose
     const handleSendGmail = async () => {
         const gmailUrl = `https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(recipientEmail)}&su=${encodeURIComponent(subject)}&body=${encodeURIComponent(emailBody)}`;
         // @ts-ignore
-        await window.electronAPI?.invoke('open-external', gmailUrl);
+        await window.electronAPI?.openExternal?.(gmailUrl);
         onClose();
     };
 
     const handleSendDefault = async () => {
         // @ts-ignore
-        await window.electronAPI?.invoke('open-mailto', {
+        await window.electronAPI?.openMailto?.({
             to: recipientEmail,
             subject: subject,
             body: emailBody

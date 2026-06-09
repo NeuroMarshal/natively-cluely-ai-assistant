@@ -6,13 +6,6 @@ export interface AudioDeviceInfo {
 }
 
 export interface NativeModule {
-  getHardwareId(): string;
-  verifyGumroadKey(licenseKey: string): Promise<string>;
-  // Dodo Payments — all three require a binary rebuild (cargo build --release)
-  // They are optional (?) so the module loads even with a stale binary.
-  verifyDodoKey?: (licenseKey: string, deviceLabel: string) => Promise<string>;
-  validateDodoKey?: (licenseKey: string) => Promise<string>;
-  deactivateDodoKey?: (licenseKey: string, instanceId: string) => Promise<string>;
   getInputDevices(): Array<AudioDeviceInfo>;
   getOutputDevices(): Array<AudioDeviceInfo>;
   // Default-output device id for the system default route. Optional because
@@ -67,17 +60,10 @@ export interface CapturedKey {
   isOutsideMouseDown?: boolean;
 }
 
-// Hard-required: crash the module load if any of these are missing.
-// These exist in the ORIGINAL binary (pre-Dodo build).
-const REQUIRED_METHODS = ['getHardwareId', 'verifyGumroadKey', 'getInputDevices', 'getOutputDevices'];
+// Hard-required: crash the module load if any audio/device APIs are missing.
+// License verification is intentionally not part of the native audio contract.
+const REQUIRED_METHODS = ['getInputDevices', 'getOutputDevices'];
 const REQUIRED_CONSTRUCTORS = ['SystemAudioCapture', 'MicrophoneCapture'];
-// Soft-required: warn (do NOT crash) if missing.
-// All three Dodo functions require a binary rebuild (cargo build --release).
-// LicenseManager checks these individually with optional chaining (?.) and
-// degrades gracefully: falls through to Gumroad if verifyDodoKey is missing,
-// skips revocation check if validateDodoKey is missing,
-// skips server deactivation if deactivateDodoKey is missing.
-const SOFT_REQUIRED_METHODS = ['verifyDodoKey', 'validateDodoKey', 'deactivateDodoKey'];
 
 /**
  * Validates that a loaded native module conforms to the NativeModule interface.
@@ -94,20 +80,6 @@ function validateNativeModule(mod: any): asserts mod is NativeModule {
     for (const cls of REQUIRED_CONSTRUCTORS) {
         if (typeof mod[cls] !== 'function') {
             throw new Error(`NativeModule: missing or invalid constructor "${cls}" (expected constructor, got ${typeof mod[cls]})`);
-        }
-    }
-
-    // Soft-required: warn, but do NOT crash.
-    // These are newly-added Dodo functions that require a binary rebuild (cargo build).
-    // The app remains fully functional for audio and Gumroad; only Dodo validate/deactivate
-    // will be unavailable until the next build ships the new binary.
-    for (const fn of SOFT_REQUIRED_METHODS) {
-        if (typeof mod[fn] !== 'function') {
-            console.warn(
-                `[nativeModuleLoader] WARNING: optional method "${fn}" not found in binary — ` +
-                `Dodo license validation/deactivation will be unavailable until binary is rebuilt. ` +
-                `Run \`npm run build:native\` to refresh the Rust native module.`
-            );
         }
     }
 

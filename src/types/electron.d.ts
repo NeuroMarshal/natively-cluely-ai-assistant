@@ -133,7 +133,8 @@ export interface ElectronAPI {
   }>
   embeddingModelSetModel: (modelId: string) => Promise<{ success: boolean; error?: string }>
   embeddingModelDeleteModel: (modelId: string) => Promise<{ success: boolean; error?: string }>
-  embeddingModelStartDownload: (modelId: string) => Promise<{ success: boolean; error?: string }>
+  embeddingModelStartDownload: (modelId: string, options?: { repair?: boolean }) => Promise<{ success: boolean; error?: string }>
+  embeddingModelCancelDownload: (modelId: string) => Promise<{ success: boolean; error?: string }>
   onEmbeddingModelDownloadProgress: (callback: (data: { modelId: string; progress: number }) => void) => () => void
   onEmbeddingModelDownloadComplete: (callback: (data: { modelId: string }) => void) => () => void
   onEmbeddingModelDownloadError: (callback: (data: { modelId: string; error: string }) => void) => () => void
@@ -188,6 +189,7 @@ export interface ElectronAPI {
   getAiResponseLanguages: () => Promise<Array<{ label: string; code: string }>>
   setAiResponseLanguage: (language: string) => Promise<{ success: boolean; error?: string }>
   getSttLanguage: () => Promise<string>
+  setSttLanguage: (key: string) => Promise<{ success: boolean; error?: string }>
   getAiResponseLanguage: () => Promise<string>
   onSttLanguageAutoDetected: (callback: (bcp47: string) => void) => () => void
   onSystemAudioPermissionDenied: (callback: (message: string) => void) => () => void
@@ -239,8 +241,9 @@ export interface ElectronAPI {
   modesDelete: (id: string) => Promise<{ success: boolean; error?: string }>
   modesSetActive: (id: string | null) => Promise<{ success: boolean; error?: string }>
   modesGetReferenceFiles: (modeId: string) => Promise<Array<{ id: string; modeId: string; fileName: string; content: string; createdAt: string }>>
-  modesUploadReferenceFile: (modeId: string) => Promise<{ success: boolean; file?: any; cancelled?: boolean; error?: string }>
+  modesUploadReferenceFile: (modeId: string) => Promise<{ success: boolean; file?: any; indexing?: any; cancelled?: boolean; error?: string }>
   modesDeleteReferenceFile: (id: string) => Promise<{ success: boolean; error?: string }>
+  onModeReferenceIndexStatus: (callback: (data: { state: 'indexing' | 'complete' | 'error'; scope?: 'file' | 'all'; modeId?: string; fileId?: string; fileName?: string; indexedFiles?: number; embeddedChunks?: number; embeddingSpace?: string; error?: string }) => void) => () => void
   modesGetNoteSections: (modeId: string) => Promise<Array<{ id: string; modeId: string; title: string; description: string; sortOrder: number }>>
   modesAddNoteSection: (modeId: string, title: string, description: string) => Promise<{ success: boolean; section?: any; error?: string }>
   modesUpdateNoteSection: (id: string, updates: { title?: string; description?: string }) => Promise<{ success: boolean; error?: string }>
@@ -367,8 +370,38 @@ export interface ElectronAPI {
   calendarConnect: () => Promise<{ success: boolean; error?: string }>
   calendarDisconnect: () => Promise<{ success: boolean; error?: string }>
   getCalendarStatus: () => Promise<{ connected: boolean; email?: string }>
+  calendarGetOAuthConfig: () => Promise<{ configured: boolean; clientId?: string }>
+  calendarSaveOAuthConfig: (config: { clientId?: string; clientSecret?: string }) => Promise<{ success: boolean; error?: string }>
   getUpcomingEvents: () => Promise<Array<{ id: string; title: string; startTime: string; endTime: string; link?: string; source: 'google'; attendees?: Array<{ email: string; name?: string; photoUrl?: string; response?: 'accepted' | 'declined' | 'tentative' | 'needsAction' }> }>>
   calendarRefresh: () => Promise<{ success: boolean; error?: string }>
+
+  // Local Whisper STT
+  localWhisperGetChannelConfig: () => Promise<{
+    enabled: boolean
+    micModelId: string
+    systemModelId: string
+    globalModelId: string
+  }>
+  localWhisperSetChannelConfig: (config: {
+    enabled?: boolean
+    micModelId?: string
+    systemModelId?: string
+  }) => Promise<{ success: boolean; warning?: string; error?: string }>
+  localWhisperGetRuntime: () => Promise<{
+    runtime: 'auto' | 'gpu' | 'cpu'
+    platform: string
+    arch: string
+    gpuAvailable: boolean
+    gpuBackend: 'webgpu'
+  }>
+  localWhisperSetRuntime: (runtime: 'auto' | 'gpu' | 'cpu') => Promise<{ success: boolean; warning?: string; error?: string }>
+  localAiGetRuntime: () => Promise<{
+    runtime: 'auto' | 'gpu' | 'cpu'
+    gpuAvailable: boolean
+    gpuBackend: 'webgpu'
+  }>
+  localAiSetRuntime: (runtime: 'auto' | 'gpu' | 'cpu') => Promise<{ success: boolean; warning?: string; error?: string }>
+  localAiTestRuntime: () => Promise<any>
 
   // Auto-Update
   onUpdateAvailable: (callback: (info: any) => void) => () => void
@@ -394,11 +427,6 @@ export interface ElectronAPI {
   onRAGStreamChunk: (callback: (data: { meetingId?: string; global?: boolean; chunk: string }) => void) => () => void
   onRAGStreamComplete: (callback: (data: { meetingId?: string; global?: boolean }) => void) => () => void
   onRAGStreamError: (callback: (data: { meetingId?: string; global?: boolean; error: string }) => void) => () => void
-
-  // Donation API
-  getDonationStatus: () => Promise<{ shouldShow: boolean; hasDonated: boolean; lifetimeShows: number }>;
-  markDonationToastShown: () => Promise<{ success: boolean }>;
-  setDonationComplete: () => Promise<{ success: boolean }>;
 
   // Keybind Management
   getKeybinds: () => Promise<Array<{ id: string; label: string; accelerator: string; isGlobal: boolean; defaultAccelerator: string }>>
@@ -469,7 +497,7 @@ export interface ElectronAPI {
   licenseActivate: (key: string) => Promise<{ success: boolean; error?: string }>
   licenseCheckPremium: () => Promise<boolean>
   licenseGetDetails: () => Promise<{ isPremium: boolean; plan?: string; provider?: string }>
-  /** Async startup check — calls Dodo validate endpoint to detect server-side revocations. */
+  /** Async compatibility check; local fork performs no remote license validation. */
   licenseCheckPremiumAsync: () => Promise<boolean>
   onLicenseStatusChanged: (callback: (data: { isPremium: boolean, plan?: string }) => void) => () => void
   licenseDeactivate: () => Promise<void>

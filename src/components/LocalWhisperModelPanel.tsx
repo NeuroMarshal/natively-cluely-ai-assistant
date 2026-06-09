@@ -13,6 +13,12 @@ interface ModelInfo {
     status: 'available' | 'missing' | 'downloading' | 'error';
     errorMessage?: string;
     requiresAppleSilicon?: boolean;
+    partial?: boolean;
+    partialBytes?: number;
+    downloadProgress?: number;
+    downloadedBytes?: number;
+    totalBytes?: number;
+    currentFile?: string;
 }
 
 interface HardwareInfo {
@@ -34,7 +40,14 @@ interface ChannelConfig {
 
 const electronAPI = (window as any).electronAPI;
 
-function ModelSelect({ label, value, options, onChange, placeholder }: any) {
+function ModelSelect({ label, value, options, catalog, onChange, placeholder }: {
+    label?: string;
+    value: string;
+    options: ModelInfo[];
+    catalog: ModelInfo[];
+    onChange: (id: string) => void;
+    placeholder: string;
+}) {
     const [isOpen, setIsOpen] = useState(false);
     const containerRef = useRef<HTMLDivElement>(null);
 
@@ -48,7 +61,8 @@ function ModelSelect({ label, value, options, onChange, placeholder }: any) {
         return () => document.removeEventListener('mousedown', handleClickOutside);
     }, []);
 
-    const selectedLabel = options.find((o: any) => o.id === value)?.name || placeholder;
+    const selected = options.find(o => o.id === value) || catalog.find(o => o.id === value);
+    const selectedLabel = selected?.name || value || placeholder;
 
     return (
         <div ref={containerRef} className="relative z-20">
@@ -71,21 +85,30 @@ function ModelSelect({ label, value, options, onChange, placeholder }: any) {
                         className="absolute top-full left-0 w-full mt-2 bg-bg-elevated border border-border-subtle rounded-xl shadow-xl z-50 overflow-hidden ring-1 ring-black/5"
                     >
                         <div className="max-h-[240px] overflow-y-auto p-1.5 space-y-0.5 custom-scrollbar">
-                            {options.map((option: any) => {
+                            {options.map((option) => {
                                 const isSelected = value === option.id;
+                                const isAvailable = option.status === 'available';
                                 return (
                                     <button
                                         key={option.id}
-                                        onClick={() => { onChange(option.id); setIsOpen(false); }}
-                                        className={`w-full rounded-[10px] px-3 py-2.5 flex items-center justify-between transition-all duration-200 group relative ${isSelected ? 'bg-bg-item-active text-text-primary shadow-inner' : 'hover:bg-bg-item-surface text-text-secondary hover:text-text-primary'}`}
+                                        disabled={!isAvailable}
+                                        onClick={() => { if (isAvailable) onChange(option.id); setIsOpen(false); }}
+                                        className={`w-full rounded-[10px] px-3 py-2.5 flex items-center justify-between gap-3 transition-all duration-200 group relative disabled:cursor-not-allowed disabled:opacity-45 ${isSelected ? 'bg-bg-item-active text-text-primary shadow-inner' : 'hover:bg-bg-item-surface text-text-secondary hover:text-text-primary'}`}
                                     >
-                                        <span className="text-sm font-medium">{option.name}</span>
+                                        <span className="min-w-0 text-left">
+                                            <span className="block text-sm font-medium truncate">{option.name}</span>
+                                            {!isAvailable && (
+                                                <span className="block text-[10px] text-text-tertiary uppercase tracking-wide">
+                                                    {option.status === 'downloading' ? 'Downloading' : option.status === 'error' ? 'Repair required' : 'Install first'}
+                                                </span>
+                                            )}
+                                        </span>
                                         {isSelected && <motion.div initial={{ scale: 0 }} animate={{ scale: 1 }}><Check size={16} className="text-accent-primary" strokeWidth={3} /></motion.div>}
                                     </button>
                                 );
                             })}
                             {options.length === 0 && (
-                                <div className="px-3 py-2.5 text-sm text-text-tertiary italic text-center">No models available</div>
+                                <div className="px-3 py-2.5 text-sm text-text-tertiary italic text-center">No downloaded models</div>
                             )}
                         </div>
                     </motion.div>
@@ -106,8 +129,10 @@ export function LocalWhisperModelPanel() {
     });
     
     const [downloadProgress, setDownloadProgress] = useState<Record<string, number>>({});
+    const [downloadDetails, setDownloadDetails] = useState<Record<string, { loadedBytes?: number; totalBytes?: number; currentFile?: string }>>({});
     const [downloadingSet, setDownloadingSet] = useState<Set<string>>(new Set());
     const [loading, setLoading] = useState(true);
+    const selectableModels = models.filter(model => model.status === 'available');
 
     const loadData = useCallback(async () => {
         try {
@@ -116,38 +141,27 @@ export function LocalWhisperModelPanel() {
                 electronAPI?.localWhisperGetHardware?.(),
                 electronAPI?.localWhisperGetChannelConfig?.()
             ]);
-            
-            if (modelsRes) setModels(modelsRes.models ?? []);
+
+            if (modelsRes) {
+                const nextModels = modelsRes.models ?? [];
+                setModels(nextModels);
+                setDownloadingSet(new Set(nextModels.filter((model: ModelInfo) => model.status === 'downloading').map((model: ModelInfo) => model.id)));
+                setDownloadProgress(Object.fromEntries(nextModels.filter((model: ModelInfo) => model.downloadProgress !== undefined).map((model: ModelInfo) => [model.id, model.downloadProgress])));
+                setDownloadDetails(Object.fromEntries(nextModels.map((model: ModelInfo) => [model.id, {
+                    loadedBytes: model.downloadedBytes,
+                    totalBytes: model.totalBytes,
+                    currentFile: model.currentFile,
+                }])));
+            }
             if (hwRes) setHardware(hwRes);
-            if (cfgRes) setConfig(cfgRes);
-            
-            // Auto-select initial models if none are set
-            if (cfgRes && modelsRes && modelsRes.models) {
-                const list = modelsRes.models;
-                const avail = list.filter((m: any) => m.status === 'available');
-                if (avail.length > 0) {
-                    let needsUpdate = false;
-                    const newCfg = { ...cfgRes };
-                    
-                    if (!cfgRes.globalModelId) {
-                        newCfg.globalModelId = avail[0].id;
-                        electronAPI?.localWhisperSetModel?.(avail[0].id);
-                        needsUpdate = true;
-                    }
-                    if (!cfgRes.micModelId) {
-                        newCfg.micModelId = avail[0].id;
-                        needsUpdate = true;
-                    }
-                    if (!cfgRes.systemModelId) {
-                        newCfg.systemModelId = avail[0].id;
-                        needsUpdate = true;
-                    }
-                    
-                    if (needsUpdate) {
-                        setConfig(newCfg);
-                        electronAPI?.localWhisperSetChannelConfig?.(newCfg);
-                    }
-                }
+            if (cfgRes) {
+                const fallbackGlobal = modelsRes?.activeModelId || cfgRes.globalModelId || '';
+                setConfig({
+                    enabled: !!cfgRes.enabled,
+                    globalModelId: cfgRes.globalModelId || fallbackGlobal,
+                    micModelId: cfgRes.micModelId || fallbackGlobal,
+                    systemModelId: cfgRes.systemModelId || fallbackGlobal,
+                });
             }
         } finally {
             setLoading(false);
@@ -160,8 +174,9 @@ export function LocalWhisperModelPanel() {
 
     // Handle downloads
     useEffect(() => {
-        const unsubProgress = electronAPI?.onLocalWhisperDownloadProgress?.((data: { modelId: string; progress: number }) => {
+        const unsubProgress = electronAPI?.onLocalWhisperDownloadProgress?.((data: { modelId: string; progress: number; loadedBytes?: number; totalBytes?: number; currentFile?: string }) => {
             setDownloadProgress(prev => ({ ...prev, [data.modelId]: data.progress }));
+            setDownloadDetails(prev => ({ ...prev, [data.modelId]: data }));
         });
         const unsubComplete = electronAPI?.onLocalWhisperDownloadComplete?.((data: { modelId: string }) => {
             setDownloadingSet(prev => { const s = new Set(prev); s.delete(data.modelId); return s; });
@@ -177,13 +192,13 @@ export function LocalWhisperModelPanel() {
         return () => { unsubProgress?.(); unsubComplete?.(); unsubError?.(); };
     }, [loadData]);
 
-    const handleDownload = async (modelId: string) => {
+    const handleDownload = async (modelId: string, repair = false) => {
         if (downloadingSet.has(modelId)) return;
         setDownloadingSet(prev => new Set([...prev, modelId]));
         setModels(prev => prev.map(m => m.id === modelId ? { ...m, status: 'downloading' } : m));
         setDownloadProgress(prev => ({ ...prev, [modelId]: 0 }));
         
-        const result = await electronAPI?.localWhisperStartDownload?.(modelId);
+        const result = await electronAPI?.localWhisperStartDownload?.(modelId, { repair });
         if (!result?.success && result?.error !== 'already-downloading') {
             setDownloadingSet(prev => { const s = new Set(prev); s.delete(modelId); return s; });
             setDownloadProgress(prev => { const d = { ...prev }; delete d[modelId]; return d; });
@@ -192,6 +207,12 @@ export function LocalWhisperModelPanel() {
                 : m
             ));
         }
+    };
+
+    const handleCancel = async (modelId: string) => {
+        await electronAPI?.localWhisperCancelDownload?.(modelId);
+        setDownloadingSet(prev => { const next = new Set(prev); next.delete(modelId); return next; });
+        await loadData();
     };
 
     const handleDelete = async (modelId: string) => {
@@ -206,26 +227,30 @@ export function LocalWhisperModelPanel() {
     };
 
     const setGlobalModel = async (modelId: string) => {
-        setConfig(prev => ({ ...prev, globalModelId: modelId }));
-        await electronAPI?.localWhisperSetModel?.(modelId);
+        const prev = config;
+        setConfig(current => ({ ...current, globalModelId: modelId }));
+        const result = await electronAPI?.localWhisperSetModel?.(modelId);
+        if (!result?.success) setConfig(prev);
     };
 
     const setMicModel = async (modelId: string) => {
-        setConfig(prev => ({ ...prev, micModelId: modelId }));
-        await electronAPI?.localWhisperSetChannelConfig?.({ micModelId: modelId });
+        const prev = config;
+        setConfig(current => ({ ...current, micModelId: modelId }));
+        const result = await electronAPI?.localWhisperSetChannelConfig?.({ micModelId: modelId });
+        if (!result?.success) setConfig(prev);
     };
 
     const setSystemModel = async (modelId: string) => {
-        setConfig(prev => ({ ...prev, systemModelId: modelId }));
-        await electronAPI?.localWhisperSetChannelConfig?.({ systemModelId: modelId });
+        const prev = config;
+        setConfig(current => ({ ...current, systemModelId: modelId }));
+        const result = await electronAPI?.localWhisperSetChannelConfig?.({ systemModelId: modelId });
+        if (!result?.success) setConfig(prev);
     };
 
     if (loading) {
         return <div className="p-4 flex justify-center text-text-tertiary"><Loader2 className="animate-spin w-5 h-5" /></div>;
     }
 
-    const availableModels = models.filter(m => m.status === 'available');
-    
     return (
         <div className="space-y-4">
             <div className="bg-bg-card rounded-xl border border-border-subtle p-5 shadow-sm">
@@ -265,14 +290,16 @@ export function LocalWhisperModelPanel() {
                                     label="Mic Audio Model"
                                     value={config.micModelId}
                                     onChange={setMicModel}
-                                    options={availableModels}
+                                    options={selectableModels}
+                                    catalog={models}
                                     placeholder="Select mic model"
                                 />
                                 <ModelSelect
                                     label="System Audio Model"
                                     value={config.systemModelId}
                                     onChange={setSystemModel}
-                                    options={availableModels}
+                                    options={selectableModels}
+                                    catalog={models}
                                     placeholder="Select system model"
                                 />
                             </motion.div>
@@ -288,7 +315,8 @@ export function LocalWhisperModelPanel() {
                                     label="Global Model"
                                     value={config.globalModelId}
                                     onChange={setGlobalModel}
-                                    options={availableModels}
+                                    options={selectableModels}
+                                    catalog={models}
                                     placeholder="Select global model"
                                 />
                             </motion.div>
@@ -313,6 +341,10 @@ export function LocalWhisperModelPanel() {
                         const progress = downloadProgress[model.id] || 0;
                         const isAvailable = model.status === 'available';
                         const isRecommended = hardware?.recommendedModel === model.id;
+                        const details = downloadDetails[model.id] ?? {};
+                        const transferred = details.loadedBytes && details.totalBytes
+                            ? `${(details.loadedBytes / 1024 / 1024).toFixed(0)} / ${(details.totalBytes / 1024 / 1024).toFixed(0)} MB`
+                            : '';
                         
                         return (
                             <div key={model.id} className="p-4 flex items-center justify-between bg-bg-card border border-border-subtle rounded-[14px] hover:shadow-sm hover:border-border-muted transition-all duration-200">
@@ -335,9 +367,10 @@ export function LocalWhisperModelPanel() {
                                     {isDownloading && (
                                         <div className="mt-3.5 pr-8">
                                             <div className="flex justify-between items-center text-[10px] text-text-secondary mb-1.5 uppercase tracking-wider font-semibold">
-                                                <span>Downloading...</span>
+                                                <span className="max-w-[70%] truncate">{details.currentFile ? `Downloading ${details.currentFile}` : 'Downloading...'}</span>
                                                 <span className="text-accent-primary tabular-nums">{Math.round(progress)}%</span>
                                             </div>
+                                            {transferred && <div className="mt-1 text-[10px] text-text-tertiary">{transferred}</div>}
                                             <div className="w-full h-1.5 bg-bg-input rounded-full overflow-hidden shadow-inner ring-1 ring-inset ring-black/5 dark:ring-white/5">
                                                 <div 
                                                     className="h-full bg-accent-primary transition-all duration-300 ease-out relative"
@@ -359,12 +392,31 @@ export function LocalWhisperModelPanel() {
                                 
                                 <div className="flex-shrink-0 flex items-center gap-2">
                                     {!isAvailable && !isDownloading && (
+                                        <>
+                                            <button
+                                                onClick={() => handleDownload(model.id)}
+                                                className="group/btn relative h-[34px] px-4 flex items-center gap-1.5 rounded-[10px] bg-accent-primary/10 hover:bg-accent-primary/20 text-accent-primary text-[13px] font-semibold transition-all duration-300 ease-[cubic-bezier(0.23,1,0.32,1)] active:scale-[0.96] shadow-sm"
+                                            >
+                                                <Download size={14} className="transition-transform duration-300 group-hover/btn:-translate-y-[2px]" />
+                                                <span>{model.partial ? 'Resume' : 'Install'}</span>
+                                            </button>
+                                            {model.partial && (
+                                                <button
+                                                    onClick={() => handleDownload(model.id, true)}
+                                                    className="h-[34px] rounded-[10px] px-2.5 text-[11px] font-semibold text-text-tertiary hover:bg-bg-elevated hover:text-text-primary"
+                                                >
+                                                    Repair
+                                                </button>
+                                            )}
+                                        </>
+                                    )}
+
+                                    {isDownloading && (
                                         <button
-                                            onClick={() => handleDownload(model.id)}
-                                            className="group/btn relative h-[34px] px-4 flex items-center gap-1.5 rounded-[10px] bg-accent-primary/10 hover:bg-accent-primary/20 text-accent-primary text-[13px] font-semibold transition-all duration-300 ease-[cubic-bezier(0.23,1,0.32,1)] active:scale-[0.96] shadow-sm"
+                                            onClick={() => handleCancel(model.id)}
+                                            className="h-[34px] rounded-[10px] px-3 text-[12px] font-semibold text-text-secondary hover:bg-red-500/10 hover:text-red-500"
                                         >
-                                            <Download size={14} className="transition-transform duration-300 group-hover/btn:-translate-y-[2px]" /> 
-                                            <span>Install</span>
+                                            Cancel
                                         </button>
                                     )}
                                     

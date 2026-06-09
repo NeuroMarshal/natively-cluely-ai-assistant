@@ -37,7 +37,7 @@ export type ProfileViolationCode =
 
 export interface ProfileViolation {
   code: ProfileViolationCode;
-  /** Human-readable detail for telemetry/logs (no raw profile content). */
+  /** Human-readable detail for logs/debug metadata (no raw profile content). */
   detail: string;
   /** Whether this should trigger a repair/fallback (vs a soft warning). */
   severity: 'error' | 'warning';
@@ -411,7 +411,7 @@ export interface CandidateSanitizeResult {
   repaired: boolean;
   /** True when stripping left nothing usable — caller MUST use a deterministic fallback. */
   needsFallback: boolean;
-  /** Marker codes that fired (telemetry only; no raw content). */
+  /** Marker codes that fired (debug metadata only; no raw content). */
   removedMarkers: string[];
 }
 

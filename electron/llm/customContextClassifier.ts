@@ -36,7 +36,7 @@ export interface ClassifiedCustomContext {
   pinned: CustomContextChunk[];
   searchable: CustomContextChunk[];
   sensitive: CustomContextChunk[];
-  /** True when the blob held any sensitive chunk (for safety telemetry). */
+  /** True when the blob held any sensitive chunk (for safety/debug metadata). */
   hasSensitive: boolean;
 }
 
@@ -134,7 +134,7 @@ export interface CustomContextSelection {
   included: CustomContextChunk[];
   /** Categories that were excluded, with a reason (debug metadata, no content). */
   excluded: { category: CustomContextCategory; reason: string }[];
-  /** True when a sensitive chunk was deliberately included (safety telemetry). */
+  /** True when a sensitive chunk was deliberately included (safety/debug metadata). */
   sensitiveIncluded: boolean;
 }
 
@@ -192,7 +192,7 @@ export const buildScopedCustomContext = (
   return { text, selection, classified };
 };
 
-/** PII-free summary of a selection for telemetry (counts + categories only). */
+/** PII-free summary of a selection for debug metadata (counts + categories only). */
 export const summarizeCustomContextSelection = (
   selection: CustomContextSelection,
   classified: ClassifiedCustomContext,

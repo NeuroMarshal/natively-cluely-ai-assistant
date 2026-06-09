@@ -666,7 +666,7 @@ describe('lifecycle — close behavior', () => {
     });
 });
 
-describe('telemetry — ring buffer eviction', () => {
+describe('warning event — ring buffer eviction', () => {
     test('emits warning event on first eviction; subsequent evictions stay silent', () => {
         const stt = new OpenAIStreamingSTT('sk-test-key');
         stt.isActive = true;

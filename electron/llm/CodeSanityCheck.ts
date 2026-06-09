@@ -7,7 +7,7 @@
 //
 // Design intent:
 //   - Deterministic and side-effect free (returns a structured result).
-//   - Caller decides what to do with a hit (telemetry / log / retry / strip).
+//   - Caller decides what to do with a hit (log / retry / strip).
 //   - We do NOT auto-rewrite the answer. Rewriting one line while leaving the
 //     dry-run narration unchanged produces an internally inconsistent answer
 //     that's worse than the original bug. The right product response is to
@@ -22,7 +22,7 @@ export type CodeSanityIssueCode =
 
 export interface CodeSanityIssue {
     code: CodeSanityIssueCode;
-    /** Short, redaction-safe label for telemetry / logs. */
+    /** Short, redaction-safe label for logs/debug metadata. */
     label: string;
     /** The matched line, truncated to 200 chars. */
     excerpt: string;

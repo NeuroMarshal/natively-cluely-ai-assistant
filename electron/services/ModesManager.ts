@@ -309,6 +309,10 @@ export class ModesManager {
         DatabaseManager.getInstance().setActiveMode(id);
     }
 
+    public resetEmbeddingRuntime(): void {
+        this.modeContextRetriever.resetEmbeddingRuntime();
+    }
+
     // ── Reference Files ───────────────────────────────────────────
 
     public getReferenceFiles(modeId: string): ModeReferenceFile[] {
@@ -334,6 +338,31 @@ export class ModesManager {
 
     public deleteReferenceFile(id: string): void {
         DatabaseManager.getInstance().deleteReferenceFile(id);
+    }
+
+    public async indexReferenceFiles(
+        modeId: string,
+        files?: ModeReferenceFile[],
+    ): Promise<{ indexedFiles: number; embeddedChunks: number; embeddingSpace?: string }> {
+        const referenceFiles = files ?? this.getReferenceFiles(modeId);
+        return this.modeContextRetriever.indexReferenceFiles(referenceFiles, modeId);
+    }
+
+    public async indexAllReferenceFiles(): Promise<{ indexedFiles: number; embeddedChunks: number; embeddingSpace?: string }> {
+        let indexedFiles = 0;
+        let embeddedChunks = 0;
+        let embeddingSpace: string | undefined;
+
+        for (const mode of this.getModes()) {
+            const files = this.getReferenceFiles(mode.id);
+            if (files.length === 0) continue;
+            const result = await this.indexReferenceFiles(mode.id, files);
+            indexedFiles += result.indexedFiles;
+            embeddedChunks += result.embeddedChunks;
+            embeddingSpace = result.embeddingSpace ?? embeddingSpace;
+        }
+
+        return { indexedFiles, embeddedChunks, embeddingSpace };
     }
 
     // ── Note Sections ─────────────────────────────────────────────
@@ -413,12 +442,31 @@ export class ModesManager {
      */
     private static readonly MAX_FILE_CHARS = 12_000;
     private static readonly MAX_TOTAL_CHARS = 40_000;
+    public static readonly MAX_DIRECT_CONTEXT_CHARS = 12_000;
+
+    public buildActiveModeDirectContextBlock(answerType?: AnswerType): string {
+        const mode = this.getActiveMode();
+        if (!mode) return '';
+
+        const directContext = answerType
+            ? selectCustomContextForAnswer(classifyCustomContext(mode.customContext), answerType)
+                .included.map(chunk => chunk.text).join('\n').trim()
+            : mode.customContext.trim();
+        if (!directContext) return '';
+
+        return `<active_mode_direct_context format="json">\n${encodeModeContextPayload({
+            mode: mode.name,
+            content: directContext.slice(0, ModesManager.MAX_DIRECT_CONTEXT_CHARS),
+        })}\n</active_mode_direct_context>`;
+    }
 
     public buildRetrievedActiveModeContextBlock(query: string, transcript?: string, tokenBudget?: number, answerType?: AnswerType): string {
         const mode = this.getActiveMode();
         if (!mode) return '';
 
-        const result = this.modeContextRetriever.retrieve(mode, this.getReferenceFiles(mode.id), {
+        // Direct mode text is injected separately and never depends on search
+        // relevance. This retriever is exclusively for uploaded documents.
+        const result = this.modeContextRetriever.retrieve({ ...mode, customContext: '' }, this.getReferenceFiles(mode.id), {
             query,
             transcript,
             tokenBudget,
@@ -433,45 +481,21 @@ export class ModesManager {
      * Callers in async paths (WhatToAnswerLLM, LLMHelper paths) should prefer
      * this. If hybrid throws (DB missing, embedding provider unavailable),
      * we fall back to the existing sync lexical path so the answer flow
-     * never breaks. Telemetry distinguishes hybrid hits from lexical fallback.
+     * never breaks.
      */
     public async buildRetrievedActiveModeContextBlockHybrid(query: string, transcript?: string, tokenBudget?: number, answerType?: AnswerType): Promise<string> {
         const mode = this.getActiveMode();
         if (!mode) return '';
         const files = this.getReferenceFiles(mode.id);
 
-        // Telemetry: rag_query / rag_hit / rag_miss / rag_lexical_fallback.
-        let usedHybrid = false;
-        let usedFallback = false;
-        let chunkCount = 0;
         try {
-            const { telemetryService } = require('./telemetry/TelemetryService');
-            telemetryService.track({
-                name: 'rag_query',
-                modeId: mode.id,
-                properties: { modeTemplateType: mode.templateType, fileCount: files.length, hasTranscript: Boolean(transcript) },
-            });
-        } catch { /* non-fatal */ }
-
-        try {
-            const result = await this.modeContextRetriever.retrieveHybrid(mode, files, {
+            const result = await this.modeContextRetriever.retrieveHybrid({ ...mode, customContext: '' }, files, {
                 query,
                 transcript,
                 tokenBudget,
                 answerType,
             });
-            usedHybrid = result.usedHybrid;
-            usedFallback = result.usedFallback;
-            chunkCount = result.chunks?.length ?? 0;
             if (result.formattedContext) {
-                try {
-                    const { telemetryService } = require('./telemetry/TelemetryService');
-                    telemetryService.track({
-                        name: usedHybrid ? 'rag_hit' : 'rag_lexical_fallback',
-                        modeId: mode.id,
-                        properties: { chunkCount, modeTemplateType: mode.templateType },
-                    });
-                } catch { /* non-fatal */ }
                 return result.formattedContext;
             }
             // Empty hybrid result — fall through to lexical so we still try.
@@ -480,14 +504,6 @@ export class ModesManager {
         }
 
         const lexical = this.buildRetrievedActiveModeContextBlock(query, transcript, tokenBudget, answerType);
-        try {
-            const { telemetryService } = require('./telemetry/TelemetryService');
-            telemetryService.track({
-                name: lexical ? 'rag_lexical_fallback' : 'rag_miss',
-                modeId: mode.id,
-                properties: { modeTemplateType: mode.templateType, fileCount: files.length },
-            });
-        } catch { /* non-fatal */ }
         return lexical;
     }
 
@@ -522,11 +538,15 @@ export class ModesManager {
         const includeReferenceSnippets = options?.includeReferenceSnippets !== false;
         if (includeReferenceSnippets) {
             try {
-                const result = this.modeContextRetriever.retrieve(mode, this.getReferenceFiles(mode.id), {
+                const result = this.modeContextRetriever.retrieve(
+                    { ...mode, customContext: '' },
+                    this.getReferenceFiles(mode.id),
+                    {
                     query: options?.query ?? '',
                     transcript: options?.transcript ?? '',
                     tokenBudget: options?.tokenBudget ?? 1200,
-                });
+                    },
+                );
                 if (result?.formattedContext) {
                     parts.push(result.formattedContext);
                 }
@@ -539,55 +559,8 @@ export class ModesManager {
     }
 
     public buildActiveModeContextBlock(): string {
-        const mode = this.getActiveMode();
-        if (!mode) return '';
-
-        const parts: string[] = [];
-
-        if (mode.customContext.trim()) {
-            parts.push(`<active_mode_custom_instructions format="json">\n${encodeModeContextPayload({ content: mode.customContext.trim() })}\n</active_mode_custom_instructions>`);
-        }
-
-        const files = this.getReferenceFiles(mode.id);
-        const MARKER = '[...truncated]';
-        let totalChars = 0;
-
-        for (const file of files) {
-            const raw = file.content.trim();
-            if (!raw) continue;
-
-            const remaining = ModesManager.MAX_TOTAL_CHARS - totalChars;
-            if (remaining <= 0) break;
-
-            // Cap per-file. Only append the truncation marker when there's
-            // headroom for the full marker — never emit a partial '[...truncat'.
-            const fileCap = ModesManager.MAX_FILE_CHARS;
-            let capped: string;
-            if (raw.length > fileCap) {
-                if (fileCap > MARKER.length + 1) {
-                    capped = raw.slice(0, fileCap - MARKER.length - 1) + '\n' + MARKER;
-                } else {
-                    capped = raw.slice(0, fileCap);
-                }
-            } else {
-                capped = raw;
-            }
-
-            // Apply the cross-file budget. If the slice would split the marker, drop it.
-            let content: string;
-            if (capped.length <= remaining) {
-                content = capped;
-            } else if (remaining >= MARKER.length + 1) {
-                content = capped.slice(0, remaining - MARKER.length - 1) + '\n' + MARKER;
-            } else {
-                content = capped.slice(0, remaining);
-            }
-
-            const payload = encodeModeContextPayload({ fileName: file.fileName, content });
-            parts.push(`<reference_file format="json">\n${payload}\n</reference_file>`);
-            totalChars += content.length;
-        }
-
-        return parts.join('\n\n');
+        // Kept for compatibility with older callers. Uploaded files are never
+        // inserted wholesale; they are available only through retrieved chunks.
+        return this.buildActiveModeDirectContextBlock();
     }
 }

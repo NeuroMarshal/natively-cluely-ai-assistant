@@ -9,14 +9,12 @@ import SettingsOverlay from "./components/SettingsOverlay"
 import StartupSequence from "./components/StartupSequence"
 import { AnimatePresence, motion } from "framer-motion"
 import UpdateBanner from "./components/UpdateBanner"
-import { SupportToaster } from "./components/SupportToaster"
 import { PermissionsToaster }   from "./components/onboarding/PermissionsToaster"
 import { AlertCircle, RefreshCw } from "lucide-react"
 import { clampOverlayOpacity, OVERLAY_OPACITY_DEFAULT, getDefaultOverlayOpacity } from "./lib/overlayAppearance"
 import { getMeetingInterfaceTheme, type MeetingInterfaceTheme } from './lib/meetingInterfaceTheme'
 import { isMac } from "./utils/platformUtils"
 import { trackAppOpen } from "./lib/toasterGating"
-import { analytics } from "./lib/analytics/analytics.service"
 import { ErrorBoundary } from "./components/ErrorBoundary"
 import ModesSettings from "./components/settings/ModesSettings"
 import { ProfileIntelligenceSettings } from "./components/ProfileIntelligenceSettings"
@@ -41,40 +39,6 @@ const App: React.FC = () => {
       </React.Suspense>
     );
   }
-
-  // Initialize Analytics
-  useEffect(() => {
-    // Only init if we are in a main window context to avoid duplicate events from helper windows
-    // Actually, we probably want to track app open from the main entry point.
-    // Let's protect initialization to ensure single run per window.
-    // The service handles single-init, but let's be thoughtful about WHICH window tracks "App Open".
-    // Launcher is the main entry. Overlay is the "Assistant".
-
-    analytics.initAnalytics();
-
-    if (isLauncherWindow || isDefault) {
-      analytics.trackAppOpen();
-    }
-
-    if (isOverlayWindow) {
-      analytics.trackAssistantStart();
-    }
-
-    // Cleanup / Session End
-    const handleUnload = () => {
-      if (isOverlayWindow) {
-        analytics.trackAssistantStop();
-      }
-      if (isLauncherWindow || isDefault) {
-        analytics.trackAppClose();
-      }
-    };
-
-    window.addEventListener('beforeunload', handleUnload);
-    return () => {
-      window.removeEventListener('beforeunload', handleUnload);
-    };
-  }, [isLauncherWindow, isOverlayWindow, isDefault]);
 
   // State
   // One-shot first-run startup sequence. Once the user dismisses it (or any
@@ -368,7 +332,6 @@ const App: React.FC = () => {
         doNotPersist: meetingRetention === 'never'
       });
       if (result.success) {
-        analytics.trackMeetingStarted();
         // Window swap happens inside main's startMeeting() now (before the
         // meeting-state broadcast) to avoid a blue→green CTA flash on the
         // launcher. No follow-up setWindowMode IPC needed here.
@@ -382,7 +345,6 @@ const App: React.FC = () => {
 
   const handleEndMeeting = () => {
     console.log("[App.tsx] handleEndMeeting triggered");
-    analytics.trackMeetingEnded();
     // Local bookkeeping that does not depend on the main process.
     const startStr = localStorage.getItem('natively_last_meeting_start');
     if (startStr) {
@@ -557,7 +519,7 @@ const App: React.FC = () => {
                         }}
                         className="w-[820px] h-[600px] max-w-[95vw] max-h-[90vh] rounded-2xl overflow-hidden border border-white/10 bg-[#141414]"
                       >
-                        <ModesSettings onClose={() => setIsModesOpen(false)} isPremium={true} isLoaded={true} isTrialActive={false} onOpenNativelyAPI={() => openSettingsExclusive('ai-providers')} />
+                        <ModesSettings onClose={() => setIsModesOpen(false)} />
                       </motion.div>
                     </motion.div>
                   )}
@@ -680,7 +642,6 @@ const App: React.FC = () => {
       </AnimatePresence>
 
       <UpdateBanner />
-      <SupportToaster />
 
       {/* Permissions toaster — first ever launch */}
       <PermissionsToaster

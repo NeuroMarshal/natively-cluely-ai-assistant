@@ -25,7 +25,7 @@
     "app:build:win": "npm run build && npm run typecheck:electron && npm run build:electron && npm run build:native && node scripts/build-win-installer.js",
     "dist:win": "npm run app:build:win",
     "build:native": "node scripts/build-native.js",
-    "test": "npm run build:electron && node --test 'electron/services/__tests__/**/*.test.mjs' 'electron/llm/__tests__/**/*.test.mjs' 'electron/llm/codeVerification/__tests__/**/*.test.mjs' 'electron/audio/__tests__/**/*.test.mjs' 'electron/update/**/*.test.mjs'",
+    "test": "npm run build:electron && node scripts/run-node-tests.mjs",
     "test:modes": "npm run build:electron && node --test electron/services/__tests__/Mode*.test.mjs electron/services/__tests__/ProfileIntelligenceGate.test.mjs",
     "test:modes:no-build": "node --test electron/services/__tests__/Mode*.test.mjs electron/services/__tests__/ProfileIntelligenceGate.test.mjs",
     "test:modes:collect-fixtures": "RUN_INTERNET_FIXTURE_COLLECTION=1 node --test electron/services/__tests__/ModeFixtureIntegrity.test.mjs",
@@ -257,7 +257,7 @@
     "lucide-react": "^0.460.0",
     "mammoth": "^1.11.0",
     "marked": "^18.0.4",
-    "onnxruntime-node": "1.22.0",
+    "onnxruntime-node": "1.26.0",
     "openai": "^6.22.0",
     "pdf-parse": "^2.4.5",
     "qrcode": "^1.5.4",
@@ -287,6 +287,6 @@
     "sqlite-vec-darwin-x64": "^0.1.7-alpha.2"
   },
   "overrides": {
-    "onnxruntime-node": "1.22.0"
+    "onnxruntime-node": "1.26.0"
   }
 }

@@ -314,7 +314,7 @@ test('empty string output is treated as provider error, chain continues', async 
   await optimizer.cleanupAll();
 });
 
-test('telemetry callback fires for attempt, success, fallback, failed, skipped', async () => {
+test('local event callback fires for attempt, success, fallback, failed, skipped', async () => {
   const runVisionFallback = await loadChain();
   const Optimizer = await loadOptimizer();
   const optimizer = new Optimizer();
@@ -332,7 +332,7 @@ test('telemetry callback fires for attempt, success, fallback, failed, skipped',
     systemPrompt: 'sys',
     userPrompt: 'user',
     optimizer,
-    telemetry: (e) => events.push(e),
+    onEvent: (e) => events.push(e),
   });
 
   const types = events.map(e => e.type);

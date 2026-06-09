@@ -13,13 +13,12 @@ import { PhoneMirrorService } from './services/PhoneMirrorService';
 import { SettingsManager } from './services/SettingsManager';
 import { SkillsManager } from './services/SkillsManager';
 
-import { TRIAL_SENTINEL_KEY } from './config/constants';
 import { AI_RESPONSE_LANGUAGES, RECOGNITION_LANGUAGES } from './config/languages';
 import { planAnswer, formatAnswerPlanForPrompt, isCodingAnswerType, validateAnswerStructure, validateProfileOutput, validateProfileEvidence, buildProfileRepairInstruction, raceStreamWithDeadline, firstUsefulDeadlineMs, isStealthEvasionQuestion, stripProfileTokensFromCoding, isBareFollowUp, buildContextFreeClarification, sanitizeCandidateAnswer, CANDIDATE_VOICE_ANSWER_TYPES } from './llm';
 import { buildLiveFallbackAnswer } from './llm/manualProfileIntelligence';
 import { isCodeVerificationEnabled } from './llm/codeVerification/verificationEnabled';
 import { CodingStreamGate } from './llm/codingStreamGate';
-import { PiLatencyTrace } from './services/telemetry/PiLatencyTracer';
+import { RequestTrace } from './utils/RequestTrace';
 import { CHAT_MODE_PROMPT } from './llm/prompts';
 import { isAssistantIdentityQuestion, profileFactsReady } from './llm/manualProfileIntelligence';
 import { buildManualProfileBackendAnswer } from './llm/profileAnswerBackend';
@@ -127,9 +126,8 @@ export function initializeIpcHandlers(appState: AppState): void {
       return { isPremium: false };
     }
   });
-  // Async variant: performs Dodo server-side revocation check on startup.
-  // Returns false only if the server definitively revokes the key.
-  // Network errors fail-open (returns cached sync result).
+  // Async compatibility variant. The local fork has no remote license server,
+  // so this resolves through the local LicenseManager shim without networking.
   safeHandle('license:check-premium-async', async () => {
     try {
       const { LicenseManager } = require('../premium/electron/services/LicenseManager');
@@ -194,6 +192,15 @@ export function initializeIpcHandlers(appState: AppState): void {
   safeHandle('get-stt-language', async () => {
     const { CredentialsManager } = require('./services/CredentialsManager');
     return CredentialsManager.getInstance().getSttLanguage();
+  });
+
+  safeHandle('set-stt-language', async (_, key: string) => {
+    if (!key || typeof key !== 'string' || !key.trim()) {
+      console.warn('[IPC] set-stt-language: invalid or empty language received, ignoring.');
+      return { success: false, error: 'Invalid language value' };
+    }
+    appState.setRecognitionLanguage(key.trim());
+    return { success: true };
   });
 
   safeHandle('get-ai-response-language', async () => {
@@ -364,29 +371,6 @@ export function initializeIpcHandlers(appState: AppState): void {
       // console.error("Error resetting queues:", error)
       return { success: false, error: error.message };
     }
-  });
-
-  // Donation IPC Handlers
-  safeHandle('get-donation-status', async () => {
-    const { DonationManager } = require('./DonationManager');
-    const manager = DonationManager.getInstance();
-    return {
-      shouldShow: manager.shouldShowToaster(),
-      hasDonated: manager.getDonationState().hasDonated,
-      lifetimeShows: manager.getDonationState().lifetimeShows,
-    };
-  });
-
-  safeHandle('mark-donation-toast-shown', async () => {
-    const { DonationManager } = require('./DonationManager');
-    DonationManager.getInstance().markAsShown();
-    return { success: true };
-  });
-
-  safeHandle('set-donation-complete', async () => {
-    const { DonationManager } = require('./DonationManager');
-    DonationManager.getInstance().setHasDonated(true);
-    return { success: true };
   });
 
   // Generate suggestion from transcript - Natively-style text-only reasoning
@@ -599,7 +583,7 @@ export function initializeIpcHandlers(appState: AppState): void {
         // Per-request latency trace (MEASURE_LATENCY=true prints a stage
         // breakdown to the console so we can see exactly where the wall time
         // goes: pre-work in streamChat → provider first token → stream).
-        const chatTrace = new PiLatencyTrace({ source: 'manual' });
+        const chatTrace = new RequestTrace({ source: 'manual' });
         chatTrace.mark('question_submitted');
 
         const answerPlan = planAnswer({
@@ -912,7 +896,7 @@ export function initializeIpcHandlers(appState: AppState): void {
             // the assistant-identity leak ("I am Natively"), false "no access" /
             // "no experience" refusals when the profile exists, wrong perspective,
             // and sensitive/salary leaks. Deterministic, no extra LLM call on the
-            // hot path; logged for telemetry. A future iteration can trigger a
+            // hot path; logged locally. A future iteration can trigger a
             // bounded regeneration with buildProfileRepairInstruction.
             try {
               const orchestrator = llmHelper.getKnowledgeOrchestrator?.();
@@ -1976,7 +1960,6 @@ export function initializeIpcHandlers(appState: AppState): void {
         hasOpenaiKey: hasKey(creds.openaiApiKey),
         hasClaudeKey: hasKey(creds.claudeApiKey),
         hasDeepseekKey: hasKey(creds.deepseekApiKey),
-        hasNativelyKey: false,
         googleServiceAccountPath: creds.googleServiceAccountPath || null,
         sttProvider: CredentialsManager.getInstance().getSttProvider(),
         groqSttModel: creds.groqSttModel || 'whisper-large-v3-turbo',
@@ -2016,7 +1999,6 @@ export function initializeIpcHandlers(appState: AppState): void {
         hasOpenaiKey: false,
         hasClaudeKey: false,
         hasDeepseekKey: false,
-        hasNativelyKey: false,
         googleServiceAccountPath: null,
         sttProvider: 'none',
         groqSttModel: 'whisper-large-v3-turbo',
@@ -2107,7 +2089,7 @@ export function initializeIpcHandlers(appState: AppState): void {
         | 'azure'
         | 'ibmwatson'
         | 'soniox'
-        | 'natively',
+        | 'local-whisper',
     ) => {
       try {
         const { CredentialsManager } = require('./services/CredentialsManager');
@@ -2545,13 +2527,45 @@ export function initializeIpcHandlers(appState: AppState): void {
   // Local Whisper STT Handlers
   // ==========================================
 
-  const activeWhisperDownloads = new Set<string>();
+  type ModelDownloadState = {
+    worker: any;
+    progress: number;
+    loadedBytes: number;
+    totalBytes: number;
+    currentFile?: string;
+  };
+  const activeWhisperDownloads = new Map<string, ModelDownloadState>();
+
+  const broadcastWhisperDownload = (channel: string, payload: any) => {
+    BrowserWindow.getAllWindows().forEach((win) => {
+      if (!win.isDestroyed()) win.webContents.send(channel, payload);
+    });
+  };
+
+  const isSelectedWhisperModel = (modelId: string): boolean => {
+    const sm = SettingsManager.getInstance();
+    return sm.get('localWhisperModel') === modelId
+      || sm.get('localWhisperModelMic') === modelId
+      || sm.get('localWhisperModelSystem') === modelId;
+  };
 
   safeHandle('local-whisper-get-models', async () => {
     try {
-      const { getAvailableModels } = require('./audio/whisper/modelManager');
-      const models = getAvailableModels();
-      const activeModelId = SettingsManager.getInstance().get('localWhisperModel') ?? '';
+      const { DEFAULT_LOCAL_WHISPER_MODEL_ID, getAvailableModels } = require('./audio/whisper/modelManager');
+      const models = getAvailableModels().map((model: any) => {
+        const active = activeWhisperDownloads.get(model.id);
+        return active
+          ? {
+              ...model,
+              status: 'downloading',
+              downloadProgress: active.progress,
+              downloadedBytes: active.loadedBytes,
+              totalBytes: active.totalBytes,
+              currentFile: active.currentFile,
+            }
+          : model;
+      });
+      const activeModelId = SettingsManager.getInstance().get('localWhisperModel') ?? DEFAULT_LOCAL_WHISPER_MODEL_ID;
       return { models, activeModelId };
     } catch (e: any) {
       console.error('[IPC] local-whisper-get-models error:', e.message);
@@ -2561,7 +2575,17 @@ export function initializeIpcHandlers(appState: AppState): void {
 
   safeHandle('local-whisper-set-model', async (_, modelId: string) => {
     try {
+      const { isKnownWhisperModel } = require('./audio/whisper/modelManager');
+      if (!isKnownWhisperModel(modelId)) {
+        return { success: false, error: 'unknown-model' };
+      }
       SettingsManager.getInstance().set('localWhisperModel', modelId);
+      try {
+        await appState.reconfigureSttProvider();
+      } catch (err: any) {
+        console.warn('[IPC] local-whisper-set-model saved selection; STT reconfigure failed:', err?.message || err);
+        return { success: true, warning: err?.message || 'stt-reconfigure-failed' };
+      }
       return { success: true };
     } catch (e: any) {
       return { success: false, error: e.message };
@@ -2573,11 +2597,13 @@ export function initializeIpcHandlers(appState: AppState): void {
   // fall back to localWhisperModel (the existing global setting).
   safeHandle('local-whisper-get-channel-config', async () => {
     const sm = SettingsManager.getInstance();
+    const { DEFAULT_LOCAL_WHISPER_MODEL_ID } = require('./audio/whisper/modelManager');
+    const globalModelId = sm.get('localWhisperModel') ?? DEFAULT_LOCAL_WHISPER_MODEL_ID;
     return {
       enabled: !!sm.get('localWhisperPerChannelEnabled'),
-      micModelId: sm.get('localWhisperModelMic') ?? '',
-      systemModelId: sm.get('localWhisperModelSystem') ?? '',
-      globalModelId: sm.get('localWhisperModel') ?? '',
+      micModelId: sm.get('localWhisperModelMic') || globalModelId,
+      systemModelId: sm.get('localWhisperModelSystem') || globalModelId,
+      globalModelId,
     };
   });
 
@@ -2586,10 +2612,26 @@ export function initializeIpcHandlers(appState: AppState): void {
     async (_, cfg: { enabled?: boolean; micModelId?: string; systemModelId?: string }) => {
       try {
         const sm = SettingsManager.getInstance();
+        const { isKnownWhisperModel } = require('./audio/whisper/modelManager');
         if (typeof cfg?.enabled === 'boolean') sm.set('localWhisperPerChannelEnabled', cfg.enabled);
-        if (typeof cfg?.micModelId === 'string') sm.set('localWhisperModelMic', cfg.micModelId);
-        if (typeof cfg?.systemModelId === 'string')
+        if (typeof cfg?.micModelId === 'string') {
+          if (cfg.micModelId && !isKnownWhisperModel(cfg.micModelId)) {
+            return { success: false, error: 'unknown-model' };
+          }
+          sm.set('localWhisperModelMic', cfg.micModelId);
+        }
+        if (typeof cfg?.systemModelId === 'string') {
+          if (cfg.systemModelId && !isKnownWhisperModel(cfg.systemModelId)) {
+            return { success: false, error: 'unknown-model' };
+          }
           sm.set('localWhisperModelSystem', cfg.systemModelId);
+        }
+        try {
+          await appState.reconfigureSttProvider();
+        } catch (err: any) {
+          console.warn('[IPC] local-whisper-set-channel-config saved selection; STT reconfigure failed:', err?.message || err);
+          return { success: true, warning: err?.message || 'stt-reconfigure-failed' };
+        }
         return { success: true };
       } catch (e: any) {
         return { success: false, error: e.message };
@@ -2597,9 +2639,169 @@ export function initializeIpcHandlers(appState: AppState): void {
     },
   );
 
+  const getLocalAiRuntime = async () => {
+    const sm = SettingsManager.getInstance();
+    const runtime = sm.get('localAiRuntime') ?? sm.get('sttRuntime');
+    if (!sm.get('localAiRuntime') && (runtime === 'auto' || runtime === 'gpu' || runtime === 'cpu')) {
+      sm.set('localAiRuntime', runtime);
+    }
+    const { isNativeWebGpuBundled } = require('./audio/whisper/inferenceConfig');
+    return {
+      runtime: runtime === 'gpu' || runtime === 'cpu' ? runtime : 'auto',
+      platform: process.platform,
+      arch: process.arch,
+      gpuAvailable: isNativeWebGpuBundled(),
+      gpuBackend: 'webgpu',
+    };
+  };
+
+  const reloadLocalAiRuntime = async (): Promise<string[]> => {
+    const warnings: string[] = [];
+    try {
+      const { modelPreloader } = require('./audio/whisper/modelPreloader');
+      modelPreloader.terminate();
+    } catch { /* preloader optional */ }
+    try {
+      const { LocalWhisperSTT } = require('./audio/LocalWhisperSTT');
+      LocalWhisperSTT.resetNativeGpuFallback();
+    } catch { /* local whisper optional */ }
+    try {
+      await appState.reconfigureSttProvider();
+    } catch (err: any) {
+      warnings.push(`STT: ${err?.message || 'reconfigure failed'}`);
+    }
+    try {
+      const selected = SettingsManager.getInstance().get('localEmbeddingModel');
+      await appState.getRAGManager()?.reloadLocalRuntime(selected);
+      const { ModesManager } = require('./services/ModesManager');
+      ModesManager.getInstance().resetEmbeddingRuntime();
+    } catch (err: any) {
+      warnings.push(`Embeddings: ${err?.message || 'reload failed'}`);
+    }
+    return warnings;
+  };
+
+  const setLocalAiRuntime = async (_: unknown, runtime: 'auto' | 'gpu' | 'cpu') => {
+    try {
+      if (runtime !== 'auto' && runtime !== 'gpu' && runtime !== 'cpu') {
+        return { success: false, error: 'invalid-runtime' };
+      }
+      const sm = SettingsManager.getInstance();
+      sm.set('localAiRuntime', runtime);
+      sm.set('sttRuntime', runtime);
+      const warnings = await reloadLocalAiRuntime();
+      return { success: true, warning: warnings.join('; ') || undefined };
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  };
+
+  safeHandle('local-ai-get-runtime', getLocalAiRuntime);
+  safeHandle('local-ai-set-runtime', setLocalAiRuntime);
+  // Legacy aliases retained for older renderer bundles.
+  safeHandle('local-whisper-get-runtime', getLocalAiRuntime);
+  safeHandle('local-whisper-set-runtime', setLocalAiRuntime);
+
+  safeHandle('local-ai-test-runtime', async () => {
+    const result: any = { success: true };
+    try {
+      const sm = SettingsManager.getInstance();
+      const {
+        isModelCached,
+        resolveActiveWhisperModelId,
+      } = require('./audio/whisper/modelManager');
+      const { buildWorkerInitMessage, resolveInferenceConfig } = require('./audio/whisper/inferenceConfig');
+      const modelId = resolveActiveWhisperModelId(sm.get('localWhisperModel'));
+      const { dtype } = resolveInferenceConfig(undefined, modelId);
+      if (!isModelCached(modelId, dtype)) {
+        result.stt = { success: false, modelId, error: 'Selected STT model is not installed.' };
+      } else {
+        const workerPath = path.join(__dirname, 'audio', 'whisper', 'whisperWorker.js');
+        const initMessage = buildWorkerInitMessage(modelId);
+        const runSttWorker = (message: any): Promise<any> => new Promise((resolve) => {
+          const usesWebGpu = message.runtimeBackend === 'webgpu';
+          const worker = usesWebGpu
+            ? require('child_process').fork(workerPath, [], {
+                env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+                serialization: 'advanced',
+                stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
+                windowsHide: true,
+              })
+            : new (require('worker_threads').Worker)(workerPath);
+          const stopWorker = () => {
+            if (usesWebGpu) {
+              if (!worker.killed) worker.kill();
+            } else {
+              void worker.terminate();
+            }
+          };
+          const timer = setTimeout(() => {
+            stopWorker();
+            resolve({ type: 'error', kind: 'runtime', message: 'STT runtime test timed out.' });
+          }, 90_000);
+          worker.on('message', (msg: any) => {
+            if (msg.type !== 'ready' && msg.type !== 'error') return;
+            clearTimeout(timer);
+            stopWorker();
+            resolve(msg);
+          });
+          worker.on('error', (error: Error) => {
+            clearTimeout(timer);
+            stopWorker();
+            resolve({ type: 'error', kind: 'runtime', message: error.message });
+          });
+          if (usesWebGpu) worker.send(message);
+          else worker.postMessage(message);
+        });
+
+        let sttMessage = await runSttWorker(initMessage);
+        if (
+          sttMessage.type === 'error' &&
+          sttMessage.kind === 'runtime' &&
+          initMessage.allowCpuFallback
+        ) {
+          sttMessage = await runSttWorker(buildWorkerInitMessage(modelId, { forceCpu: true }));
+        }
+        result.stt = sttMessage.type === 'ready'
+          ? {
+              success: true,
+              modelId,
+              requestedDevice: initMessage.runtimeBackend,
+              activeDevice: sttMessage.activeDevice,
+            }
+          : { success: false, modelId, error: sttMessage.message };
+      }
+
+      const { LocalEmbeddingProvider } = require('./rag/providers/LocalEmbeddingProvider');
+      const selectedEmbedding = sm.get('localEmbeddingModel');
+      const provider = new LocalEmbeddingProvider(selectedEmbedding);
+      try {
+        const vector = await provider.embedQuery('Local runtime verification');
+        result.embeddings = {
+          success: vector.length === provider.dimensions,
+          dimensions: vector.length,
+          ...provider.getRuntimeInfo(),
+        };
+      } catch (error: any) {
+        result.embeddings = { success: false, error: error?.message || String(error) };
+      } finally {
+        await provider.dispose();
+      }
+      result.success = !!result.stt?.success && !!result.embeddings?.success;
+      return result;
+    } catch (error: any) {
+      return { success: false, error: error?.message || String(error), ...result };
+    }
+  });
+
   safeHandle('local-whisper-delete-model', async (_, modelId: string) => {
     try {
       const { deleteModel } = require('./audio/whisper/modelManager');
+      const active = activeWhisperDownloads.get(modelId);
+      if (active) {
+        activeWhisperDownloads.delete(modelId);
+        await active.worker.terminate();
+      }
       deleteModel(modelId);
       return { success: true };
     } catch (e: any) {
@@ -2607,44 +2809,108 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   });
 
-  safeHandle('local-whisper-start-download', async (event, modelId: string) => {
+  safeHandle('local-whisper-start-download', async (
+    _event,
+    modelId: string,
+    options?: { repair?: boolean },
+  ) => {
     if (activeWhisperDownloads.has(modelId)) {
       return { success: false, error: 'already-downloading' };
     }
-    activeWhisperDownloads.add(modelId);
     try {
       const { Worker } = require('worker_threads');
       const nodePath = require('path');
       const { buildWorkerInitMessage } = require('./audio/whisper/inferenceConfig');
+      const { deleteModel, isKnownWhisperModel, isModelCached } = require('./audio/whisper/modelManager');
+      const { resolveInferenceConfig } = require('./audio/whisper/inferenceConfig');
+      if (!isKnownWhisperModel(modelId)) {
+        return { success: false, error: 'unknown-model' };
+      }
+      if (options?.repair) {
+        deleteModel(modelId);
+      }
+      const { dtype } = resolveInferenceConfig('cpu', modelId);
+      if (isModelCached(modelId, dtype)) return { success: true };
       const workerPath = nodePath.join(__dirname, 'audio', 'whisper', 'whisperWorker.js');
       const w = new Worker(workerPath);
-      const sender = event.sender;
+      const state: ModelDownloadState = {
+        worker: w,
+        progress: 0,
+        loadedBytes: 0,
+        totalBytes: 0,
+      };
+      activeWhisperDownloads.set(modelId, state);
       w.on('message', (msg: any) => {
-        if (sender.isDestroyed()) return;
         if (msg.type === 'progress') {
-          sender.send('local-whisper-download-progress', { modelId, progress: msg.progress });
+          state.progress = msg.progress ?? state.progress;
+          state.loadedBytes = msg.loadedBytes ?? state.loadedBytes;
+          state.totalBytes = msg.totalBytes ?? state.totalBytes;
+          state.currentFile = msg.currentFile ?? state.currentFile;
+          broadcastWhisperDownload('local-whisper-download-progress', {
+            modelId,
+            progress: state.progress,
+            loadedBytes: state.loadedBytes,
+            totalBytes: state.totalBytes,
+            currentFile: state.currentFile,
+          });
         } else if (msg.type === 'ready') {
           activeWhisperDownloads.delete(modelId);
-          sender.send('local-whisper-download-complete', { modelId });
+          if (!isModelCached(modelId, dtype)) {
+            broadcastWhisperDownload('local-whisper-download-error', {
+              modelId,
+              error: 'Downloaded model is incomplete. Resume the download or use Repair.',
+            });
+          } else {
+            broadcastWhisperDownload('local-whisper-download-complete', { modelId });
+            if (isSelectedWhisperModel(modelId)) {
+              appState.reconfigureSttProvider().catch((err: Error) => {
+                console.warn('[IPC] local-whisper reconfigure after download failed:', err.message);
+              });
+            }
+          }
           w.terminate();
         } else if (msg.type === 'error') {
           activeWhisperDownloads.delete(modelId);
-          sender.send('local-whisper-download-error', { modelId, error: msg.message });
+          broadcastWhisperDownload('local-whisper-download-error', {
+            modelId,
+            error: msg.message,
+          });
           w.terminate();
         }
       });
       w.on('error', (err: Error) => {
         activeWhisperDownloads.delete(modelId);
-        if (!sender.isDestroyed()) {
-          sender.send('local-whisper-download-error', { modelId, error: err.message });
+        broadcastWhisperDownload('local-whisper-download-error', { modelId, error: err.message });
+      });
+      w.on('exit', (code: number) => {
+        if (activeWhisperDownloads.get(modelId)?.worker !== w) return;
+        activeWhisperDownloads.delete(modelId);
+        if (code !== 0) {
+          broadcastWhisperDownload('local-whisper-download-error', {
+            modelId,
+            error: `Download stopped (worker exit ${code}). You can resume it.`,
+          });
         }
       });
-      w.postMessage(buildWorkerInitMessage(modelId));
+      w.postMessage(buildWorkerInitMessage(modelId, { forceCpu: true, allowRemoteModels: true }));
       return { success: true };
     } catch (e: any) {
       activeWhisperDownloads.delete(modelId);
       return { success: false, error: e.message };
     }
+  });
+
+  safeHandle('local-whisper-cancel-download', async (_, modelId: string) => {
+    const active = activeWhisperDownloads.get(modelId);
+    if (!active) return { success: true };
+    activeWhisperDownloads.delete(modelId);
+    await active.worker.terminate();
+    broadcastWhisperDownload('local-whisper-download-error', {
+      modelId,
+      error: 'Download paused. Resume keeps the downloaded files.',
+      paused: true,
+    });
+    return { success: true };
   });
 
   safeHandle('local-whisper-preload', async (_, modelId: string) => {
@@ -2653,16 +2919,16 @@ export function initializeIpcHandlers(appState: AppState): void {
       const { isModelCached } = require('./audio/whisper/modelManager');
       const { resolveInferenceConfig } = require('./audio/whisper/inferenceConfig');
       const { SettingsManager } = require('./services/SettingsManager');
-      const id =
-        modelId ||
-        SettingsManager.getInstance().get('localWhisperModel') ||
-        'Xenova/whisper-tiny.en';
+      const { resolveActiveWhisperModelId } = require('./audio/whisper/modelManager');
+      const id = resolveActiveWhisperModelId(
+        modelId || SettingsManager.getInstance().get('localWhisperModel'),
+      );
       // Pass active dtype so the cache check verifies the SPECIFIC ONNX
       // files (e.g. encoder_model.onnx for fp32) are present — not just
       // "directory non-empty". Otherwise a v2-cached _quantized.onnx-only
       // directory would be reported "available" but trigger a 142MB
       // background fetch on first start().
-      const { dtype } = resolveInferenceConfig();
+      const { dtype } = resolveInferenceConfig(undefined, id);
       if (!isModelCached(id, dtype)) {
         return { success: false, reason: 'model-not-cached' };
       }
@@ -2686,7 +2952,18 @@ export function initializeIpcHandlers(appState: AppState): void {
   // userData/embedding-models — never pulled through Ollama, so they stay fully
   // internal to RAG and never appear in the chat ("active") model selector.
 
-  const activeEmbeddingDownloads = new Set<string>();
+  const activeEmbeddingDownloads = new Map<string, ModelDownloadState>();
+
+  const broadcastEmbeddingDownload = (channel: string, payload: any) => {
+    BrowserWindow.getAllWindows().forEach((win) => {
+      if (!win.isDestroyed()) win.webContents.send(channel, payload);
+    });
+  };
+  const broadcastModeReferenceIndexStatus = (payload: Record<string, unknown>) => {
+    BrowserWindow.getAllWindows().forEach((win) => {
+      if (!win.isDestroyed()) win.webContents.send('mode-reference-index-status', payload);
+    });
+  };
 
   // Apply a model selection at runtime: re-init the pipeline (loads the new model
   // → new embedding space) and re-embed both meetings (scheduleAutoReindex inside
@@ -2699,12 +2976,33 @@ export function initializeIpcHandlers(appState: AppState): void {
     if (orchestrator && typeof orchestrator.ensureEmbeddingSpace === 'function') {
       await orchestrator.ensureEmbeddingSpace();
     }
+    try {
+      const { ModesManager } = require('./services/ModesManager');
+      broadcastModeReferenceIndexStatus({ state: 'indexing', scope: 'all', reason: 'embedding-model-changed', modelId });
+      const result = await ModesManager.getInstance().indexAllReferenceFiles();
+      broadcastModeReferenceIndexStatus({ state: 'complete', scope: 'all', reason: 'embedding-model-changed', modelId, ...result });
+    } catch (err: any) {
+      broadcastModeReferenceIndexStatus({ state: 'error', scope: 'all', reason: 'embedding-model-changed', modelId, error: err?.message || String(err) });
+      console.warn('[IPC] mode reference reindex after embedding switch failed:', err?.message || err);
+    }
   };
 
   safeHandle('embedding-model-get-models', async () => {
     try {
       const { getAvailableEmbeddingModels, resolveActiveEmbeddingModelId } = require('./rag/embeddingModelManager');
-      const models = getAvailableEmbeddingModels();
+      const models = getAvailableEmbeddingModels().map((model: any) => {
+        const active = activeEmbeddingDownloads.get(model.id);
+        return active
+          ? {
+              ...model,
+              status: 'downloading',
+              downloadProgress: active.progress,
+              downloadedBytes: active.loadedBytes,
+              totalBytes: active.totalBytes,
+              currentFile: active.currentFile,
+            }
+          : model;
+      });
       // Report the model that is ACTUALLY active (the selection if downloaded,
       // otherwise the bundled fallback) so the "Active" badge is truthful.
       const setting = SettingsManager.getInstance().get('localEmbeddingModel');
@@ -2753,6 +3051,11 @@ export function initializeIpcHandlers(appState: AppState): void {
       if (resolveActiveEmbeddingModelId(setting) === modelId) {
         return { success: false, error: 'active-model' };
       }
+      const active = activeEmbeddingDownloads.get(modelId);
+      if (active) {
+        activeEmbeddingDownloads.delete(modelId);
+        await active.worker.terminate();
+      }
       deleteEmbeddingModel(modelId);
       return { success: true };
     } catch (e: any) {
@@ -2760,7 +3063,11 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   });
 
-  safeHandle('embedding-model-start-download', async (event, modelId: string) => {
+  safeHandle('embedding-model-start-download', async (
+    _event,
+    modelId: string,
+    options?: { repair?: boolean },
+  ) => {
     if (activeEmbeddingDownloads.has(modelId)) {
       return { success: false, error: 'already-downloading' };
     }
@@ -2768,44 +3075,63 @@ export function initializeIpcHandlers(appState: AppState): void {
       getEmbeddingModelEntry,
       getEmbeddingModelsDir,
       isEmbeddingModelCached,
+      deleteEmbeddingModel,
     } = require('./rag/embeddingModelManager');
     const modelEntry = getEmbeddingModelEntry(modelId);
     if (!modelEntry) {
       return { success: false, error: 'unknown-model' };
     }
+    // Repair must delete BEFORE the cache check — otherwise a model whose
+    // files still pass the (size-based) cache heuristic but are actually
+    // corrupt is reported "already cached" and never re-downloaded. Mirrors
+    // the whisper repair handler order.
+    if (options?.repair) deleteEmbeddingModel(modelId);
     if (isEmbeddingModelCached(modelId)) {
       return { success: true };
     }
-    activeEmbeddingDownloads.add(modelId);
-    const sender = event.sender;
     try {
       const { Worker } = require('worker_threads');
       const workerPath = require('path').join(__dirname, 'rag', 'embeddingDownloadWorker.js');
       const worker = new Worker(workerPath);
+      const state: ModelDownloadState = {
+        worker,
+        progress: 0,
+        loadedBytes: 0,
+        totalBytes: 0,
+      };
+      activeEmbeddingDownloads.set(modelId, state);
       let settled = false;
       const finish = async (error?: string): Promise<void> => {
         if (settled) return;
         settled = true;
         activeEmbeddingDownloads.delete(modelId);
         if (error) {
-          if (!sender.isDestroyed()) sender.send('embedding-model-download-error', { modelId, error });
+          broadcastEmbeddingDownload('embedding-model-download-error', { modelId, error });
         } else if (!isEmbeddingModelCached(modelId)) {
-          if (!sender.isDestroyed()) {
-            sender.send('embedding-model-download-error', {
-              modelId,
-              error: `Downloaded files for "${modelEntry.name}" are incomplete.`,
-            });
-          }
+          broadcastEmbeddingDownload('embedding-model-download-error', {
+            modelId,
+            error: `Downloaded files for "${modelEntry.name}" are incomplete. Resume or repair the download.`,
+          });
         } else {
           const selected = SettingsManager.getInstance().get('localEmbeddingModel');
           if (selected === modelId) await applyEmbeddingModel(modelId);
-          if (!sender.isDestroyed()) sender.send('embedding-model-download-complete', { modelId });
+          broadcastEmbeddingDownload('embedding-model-download-complete', { modelId });
         }
         await worker.terminate();
       };
       worker.on('message', (msg: any) => {
-        if (msg.type === 'progress' && !sender.isDestroyed()) {
-          sender.send('embedding-model-download-progress', { modelId, progress: msg.progress });
+        if (msg.type === 'progress') {
+          state.progress = msg.progress ?? state.progress;
+          state.loadedBytes = msg.loadedBytes ?? state.loadedBytes;
+          state.totalBytes = msg.totalBytes ?? state.totalBytes;
+          state.currentFile = msg.currentFile ?? state.currentFile;
+          broadcastEmbeddingDownload('embedding-model-download-progress', {
+            modelId,
+            progress: state.progress,
+            loadedBytes: state.loadedBytes,
+            totalBytes: state.totalBytes,
+            currentFile: state.currentFile,
+          });
         } else if (msg.type === 'ready') {
           void finish();
         } else if (msg.type === 'error') {
@@ -2824,6 +3150,19 @@ export function initializeIpcHandlers(appState: AppState): void {
       activeEmbeddingDownloads.delete(modelId);
       return { success: false, error: e?.message || 'Download failed' };
     }
+  });
+
+  safeHandle('embedding-model-cancel-download', async (_, modelId: string) => {
+    const active = activeEmbeddingDownloads.get(modelId);
+    if (!active) return { success: true };
+    activeEmbeddingDownloads.delete(modelId);
+    await active.worker.terminate();
+    broadcastEmbeddingDownload('embedding-model-download-error', {
+      modelId,
+      error: 'Download paused. Resume keeps the downloaded files.',
+      paused: true,
+    });
+    return { success: true };
   });
 
   safeHandle(
@@ -3823,22 +4162,6 @@ export function initializeIpcHandlers(appState: AppState): void {
       const intelligenceManager = appState.getIntelligenceManager();
       const action = intelligenceManager.acceptDynamicAction(actionId);
       if (!action) return { success: false, error: 'not_found' };
-      // Phase 6 — telemetry on accept (no transcript, no evidence body).
-      try {
-        const { telemetryService } = require('./services/telemetry/TelemetryService');
-        telemetryService.track({
-          name: 'dynamic_action_accepted',
-          sessionId: action.sessionId,
-          modeId: action.modeId,
-          properties: {
-            actionId: action.id,
-            actionType: action.type,
-            modeTemplateType: action.modeTemplateType,
-          },
-        });
-      } catch {
-        /* non-fatal */
-      }
       // Caller (renderer) is expected to follow up with a normal Ask-AI call
       // using action.promptInstruction. We return the action so the renderer
       // can populate the answer prompt without a second round-trip.
@@ -3855,13 +4178,6 @@ export function initializeIpcHandlers(appState: AppState): void {
       }
       const intelligenceManager = appState.getIntelligenceManager();
       intelligenceManager.dismissDynamicAction(actionId);
-      // Phase 6 — telemetry on dismiss.
-      try {
-        const { telemetryService } = require('./services/telemetry/TelemetryService');
-        telemetryService.track({ name: 'dynamic_action_dismissed', properties: { actionId } });
-      } catch {
-        /* non-fatal */
-      }
       return { success: true };
     } catch (error: any) {
       return { success: false, error: error?.message ?? 'internal_error' };
@@ -3983,6 +4299,21 @@ export function initializeIpcHandlers(appState: AppState): void {
   safeHandle('get-calendar-status', async () => {
     const { CalendarManager } = require('./services/CalendarManager');
     return CalendarManager.getInstance().getConnectionStatus();
+  });
+
+  safeHandle('calendar-get-oauth-config', async () => {
+    const { CalendarManager } = require('./services/CalendarManager');
+    return CalendarManager.getInstance().getOAuthConfigStatus();
+  });
+
+  safeHandle('calendar-save-oauth-config', async (_, config: { clientId?: string; clientSecret?: string }) => {
+    try {
+      const { CalendarManager } = require('./services/CalendarManager');
+      CalendarManager.getInstance().setOAuthConfig(config || {});
+      return { success: true };
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
   });
 
   safeHandle('get-upcoming-events', async () => {
@@ -4795,6 +5126,17 @@ export function initializeIpcHandlers(appState: AppState): void {
       try {
         const { ModesManager } = require('./services/ModesManager');
         const mgr = ModesManager.getInstance();
+        if (updates.customContext !== undefined) {
+          if (typeof updates.customContext !== 'string') {
+            return { success: false, error: 'Mode context must be text.' };
+          }
+          if (updates.customContext.length > ModesManager.MAX_DIRECT_CONTEXT_CHARS) {
+            return {
+              success: false,
+              error: `Mode context is limited to ${ModesManager.MAX_DIRECT_CONTEXT_CHARS} characters.`,
+            };
+          }
+        }
         mgr.updateMode(id, updates);
         return { success: true };
       } catch (e: any) {
@@ -4807,7 +5149,20 @@ export function initializeIpcHandlers(appState: AppState): void {
   safeHandle('modes:delete', async (_, id: string) => {
     try {
       const { ModesManager } = require('./services/ModesManager');
-      ModesManager.getInstance().deleteMode(id);
+      const manager = ModesManager.getInstance();
+      const wasActive = manager.getActiveMode()?.id === id;
+      manager.deleteMode(id);
+      if (wasActive) {
+        try {
+          appState.getIntelligenceManager()?.clearSessionContext();
+          appState.getIntelligenceManager()?.clearDynamicActionContext();
+        } catch {
+          // There may be no active meeting session.
+        }
+        BrowserWindow.getAllWindows().forEach((win) => {
+          if (!win.isDestroyed()) win.webContents.send('mode-changed', { id: null, name: null });
+        });
+      }
       return { success: true };
     } catch (e: any) {
       console.error('[IPC] modes:delete error:', e);
@@ -4851,17 +5206,6 @@ export function initializeIpcHandlers(appState: AppState): void {
       } catch {
         /* non-fatal */
       }
-      // Phase 6 — mode_switched telemetry (no PII).
-      try {
-        const { telemetryService } = require('./services/telemetry/TelemetryService');
-        telemetryService.track({
-          name: 'mode_switched',
-          modeId: activeMode?.id,
-          properties: { modeTemplateType: activeMode?.templateType, cleared: !id },
-        });
-      } catch {
-        /* non-fatal */
-      }
       return { success: true };
     } catch (e: any) {
       console.error('[IPC] modes:set-active error:', e);
@@ -4879,7 +5223,7 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   });
 
-  safeHandle('modes:upload-reference-file', async (_, modeId: string) => {
+  safeHandle('modes:upload-reference-file', async (event, modeId: string) => {
     try {
       // Server-side allow-list. The dialog filter is a hint to users — never
       // trust it for validation, since the user can rename a file or the
@@ -5048,8 +5392,23 @@ export function initializeIpcHandlers(appState: AppState): void {
       }
 
       const { ModesManager } = require('./services/ModesManager');
-      const file = ModesManager.getInstance().addReferenceFile({ modeId, fileName, content });
-      return { success: true, file };
+      const manager = ModesManager.getInstance();
+      const file = manager.addReferenceFile({ modeId, fileName, content });
+      let indexing: any = null;
+      try {
+        const status = { state: 'indexing', scope: 'file', modeId, fileId: file.id, fileName };
+        broadcastModeReferenceIndexStatus(status);
+        if (!event.sender.isDestroyed()) event.sender.send('mode-reference-index-status', status);
+        indexing = await manager.indexReferenceFiles(modeId, [file]);
+        const complete = { state: 'complete', scope: 'file', modeId, fileId: file.id, fileName, ...indexing };
+        broadcastModeReferenceIndexStatus(complete);
+      } catch (indexErr: any) {
+        indexing = { error: indexErr?.message || String(indexErr) };
+        const failed = { state: 'error', scope: 'file', modeId, fileId: file.id, fileName, error: indexing.error };
+        broadcastModeReferenceIndexStatus(failed);
+        console.warn('[IPC] modes:upload-reference-file indexing failed:', indexing.error);
+      }
+      return { success: true, file, indexing };
     } catch (e: any) {
       console.error('[IPC] modes:upload-reference-file error:', e);
       // Do not leak raw error.message to the renderer (may contain absolute

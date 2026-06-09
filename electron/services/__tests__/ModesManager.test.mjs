@@ -176,7 +176,7 @@ test('active mode prompt suffix strips shared prompt prelude exactly once', () =
   assert.equal((suffix.match(/<core_identity>/g) ?? []).length, 0);
 });
 
-test('active mode context includes custom instructions and only active-mode reference files', () => {
+test('active preset context includes direct instructions but never raw reference files', () => {
   installDb(makeDb({
     modes: [
       modeRow({ id: 'sales-mode', template_type: 'sales', custom_context: 'Use Acme discovery notes. Keep answers short.', is_active: 1 }),
@@ -190,13 +190,19 @@ test('active mode context includes custom instructions and only active-mode refe
 
   const block = ModesManager.getInstance().buildActiveModeContextBlock();
 
-  assert.match(block, /<active_mode_custom_instructions format="json">/);
+  assert.match(block, /<active_mode_direct_context format="json">/);
   assert.match(block, /Use Acme discovery notes/);
-  assert.match(block, /<reference_file format="json">/);
-  assert.match(block, /pricing-latest\.md/);
-  assert.match(block, /Enterprise plan is \$20k annually/);
+  assert.doesNotMatch(block, /<reference_file format="json">/);
+  assert.doesNotMatch(block, /pricing-latest\.md/);
+  assert.doesNotMatch(block, /Enterprise plan is \$20k annually/);
   assert.doesNotMatch(block, /PRIVATE_CANDIDATE_B_SENTINEL/);
   assert.doesNotMatch(block, /candidate-b-resume/);
+
+  const retrieved = ModesManager.getInstance().buildRetrievedActiveModeContextBlock(
+    'What is the enterprise annual plan price?',
+  );
+  assert.match(retrieved, /pricing-latest\.md/);
+  assert.match(retrieved, /Enterprise plan is \$20k annually/);
 });
 
 test('mode context payload encoder is exported for post-call mode snapshots', () => {
@@ -224,11 +230,10 @@ test('active mode context JSON-encodes user-controlled strings', () => {
 
   const block = ModesManager.getInstance().buildActiveModeContextBlock();
 
-  assert.equal((block.match(/<active_mode_custom_instructions format="json">/g) ?? []).length, 1);
-  assert.equal((block.match(/<reference_file format="json">/g) ?? []).length, 1);
+  assert.equal((block.match(/<active_mode_direct_context format="json">/g) ?? []).length, 1);
+  assert.equal((block.match(/<reference_file format="json">/g) ?? []).length, 0);
   assert.doesNotMatch(block, /<reference_file format="json">INJECTED/);
   assert.doesNotMatch(block, /<active_mode_custom_instructions>OVERRIDE/);
-  assert.match(block, /evil\\" name=\\"breakout\.md/);
   assert.match(block, /\\u003c\/reference_file\\u003e/);
   assert.doesNotMatch(block, /<\/reference_file><active_mode_custom_instructions>/);
 });
@@ -249,13 +254,15 @@ test('switching active mode immediately changes context and prevents stale refer
   db.setActiveMode('team-mode');
   const teamBlock = ModesManager.getInstance().buildActiveModeContextBlock();
 
-  assert.match(salesBlock, /SALES_SECRET_SENTINEL/);
-  assert.doesNotMatch(salesBlock, /TEAM_SECRET_SENTINEL/);
-  assert.match(teamBlock, /TEAM_SECRET_SENTINEL/);
-  assert.doesNotMatch(teamBlock, /SALES_SECRET_SENTINEL/);
+  assert.match(salesBlock, /Sales-only context/);
+  assert.doesNotMatch(salesBlock, /Team-only context/);
+  assert.match(teamBlock, /Team-only context/);
+  assert.doesNotMatch(teamBlock, /Sales-only context/);
+  assert.doesNotMatch(salesBlock, /SALES_SECRET_SENTINEL|TEAM_SECRET_SENTINEL/);
+  assert.doesNotMatch(teamBlock, /SALES_SECRET_SENTINEL|TEAM_SECRET_SENTINEL/);
 });
 
-test('reference context skips empty files and truncates large files with complete markers', () => {
+test('raw reference files are never inserted into the direct context path', () => {
   const longContent = 'A'.repeat(12_500);
   installDb(makeDb({
     modes: [modeRow({ id: 'technical-mode', template_type: 'technical-interview', is_active: 1 })],
@@ -267,11 +274,8 @@ test('reference context skips empty files and truncates large files with complet
 
   const block = ModesManager.getInstance().buildActiveModeContextBlock();
 
-  assert.doesNotMatch(block, /empty\.md/);
-  assert.match(block, /<reference_file format="json">/);
-  assert.match(block, /system-design\.md/);
-  assert.match(block, /\[\.\.\.truncated\]/);
-  assert.doesNotMatch(block, /\[\.\.\.truncat\s*\n<\/reference_file>/);
+  assert.equal(block, '');
+  assert.doesNotMatch(block, /empty\.md|system-design\.md|<reference_file/);
   assert.ok(block.length < longContent.length);
 });
 

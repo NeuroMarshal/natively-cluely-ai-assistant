@@ -97,13 +97,39 @@ interface ElectronAPI {
       | 'azure'
       | 'ibmwatson'
       | 'soniox'
-      | 'natively'
       | 'local-whisper',
   ) => Promise<{ success: boolean; error?: string }>;
   localWhisperGetModels: () => Promise<{ models: any[]; activeModelId: string }>;
-  localWhisperSetModel: (modelId: string) => Promise<{ success: boolean }>;
+  localWhisperSetModel: (modelId: string) => Promise<{ success: boolean; warning?: string; error?: string }>;
+  localWhisperGetChannelConfig: () => Promise<{
+    enabled: boolean;
+    micModelId: string;
+    systemModelId: string;
+    globalModelId: string;
+  }>;
+  localWhisperSetChannelConfig: (config: {
+    enabled?: boolean;
+    micModelId?: string;
+    systemModelId?: string;
+  }) => Promise<{ success: boolean; warning?: string; error?: string }>;
   localWhisperDeleteModel: (modelId: string) => Promise<{ success: boolean; error?: string }>;
-  localWhisperStartDownload: (modelId: string) => Promise<{ success: boolean; error?: string }>;
+  localWhisperGetRuntime: () => Promise<{
+    runtime: 'auto' | 'gpu' | 'cpu';
+    platform: string;
+    arch: string;
+    gpuAvailable: boolean;
+    gpuBackend: 'webgpu';
+  }>;
+  localWhisperSetRuntime: (runtime: 'auto' | 'gpu' | 'cpu') => Promise<{ success: boolean; warning?: string; error?: string }>;
+  localAiGetRuntime: () => Promise<{
+    runtime: 'auto' | 'gpu' | 'cpu';
+    gpuAvailable: boolean;
+    gpuBackend: 'webgpu';
+  }>;
+  localAiSetRuntime: (runtime: 'auto' | 'gpu' | 'cpu') => Promise<{ success: boolean; warning?: string; error?: string }>;
+  localAiTestRuntime: () => Promise<any>;
+  localWhisperStartDownload: (modelId: string, options?: { repair?: boolean }) => Promise<{ success: boolean; error?: string }>;
+  localWhisperCancelDownload: (modelId: string) => Promise<{ success: boolean; error?: string }>;
   onLocalWhisperDownloadProgress: (
     callback: (data: { modelId: string; progress: number }) => void,
   ) => () => void;
@@ -128,7 +154,8 @@ interface ElectronAPI {
   embeddingModelGetModels: () => Promise<{ models: any[]; activeModelId: string; selectedModelId: string | null }>;
   embeddingModelSetModel: (modelId: string) => Promise<{ success: boolean; error?: string }>;
   embeddingModelDeleteModel: (modelId: string) => Promise<{ success: boolean; error?: string }>;
-  embeddingModelStartDownload: (modelId: string) => Promise<{ success: boolean; error?: string }>;
+  embeddingModelStartDownload: (modelId: string, options?: { repair?: boolean }) => Promise<{ success: boolean; error?: string }>;
+  embeddingModelCancelDownload: (modelId: string) => Promise<{ success: boolean; error?: string }>;
   onEmbeddingModelDownloadProgress: (
     callback: (data: { modelId: string; progress: number }) => void,
   ) => () => void;
@@ -181,6 +208,7 @@ interface ElectronAPI {
   getAiResponseLanguages: () => Promise<Array<{ label: string; code: string }>>;
   setAiResponseLanguage: (language: string) => Promise<{ success: boolean; error?: string }>;
   getSttLanguage: () => Promise<string>;
+  setSttLanguage: (key: string) => Promise<{ success: boolean; error?: string }>;
   getAiResponseLanguage: () => Promise<string>;
   onSttLanguageAutoDetected: (callback: (bcp47: string) => void) => () => void;
   onSystemAudioPermissionDenied: (callback: (message: string) => void) => () => void;
@@ -455,6 +483,10 @@ interface ElectronAPI {
   calendarConnect: () => Promise<{ success: boolean; error?: string }>;
   calendarDisconnect: () => Promise<{ success: boolean; error?: string }>;
   getCalendarStatus: () => Promise<{ connected: boolean; email?: string }>;
+  calendarGetOAuthConfig: () => Promise<{ configured: boolean; clientId?: string }>;
+  calendarSaveOAuthConfig: (
+    config: { clientId?: string; clientSecret?: string },
+  ) => Promise<{ success: boolean; error?: string }>;
   getUpcomingEvents: () => Promise<
     Array<{
       id: string;
@@ -554,15 +586,6 @@ interface ElectronAPI {
   onStealthKeyCaptured: (
     cb: (ev: { keyCode: number; chars: string; flags: number; isKeyDown: boolean }) => void,
   ) => () => void;
-
-  // Donation API
-  getDonationStatus: () => Promise<{
-    shouldShow: boolean;
-    hasDonated: boolean;
-    lifetimeShows: number;
-  }>;
-  markDonationToastShown: () => Promise<{ success: boolean }>;
-  setDonationComplete: () => Promise<{ success: boolean }>;
 
   // Profile Engine API
   profileUploadResume: (filePath: string) => Promise<{ success: boolean; error?: string }>;
@@ -729,8 +752,21 @@ interface ElectronAPI {
   >;
   modesUploadReferenceFile: (
     modeId: string,
-  ) => Promise<{ success: boolean; cancelled?: boolean; file?: any; error?: string }>;
+  ) => Promise<{ success: boolean; cancelled?: boolean; file?: any; indexing?: any; error?: string }>;
   modesDeleteReferenceFile: (id: string) => Promise<{ success: boolean; error?: string }>;
+  onModeReferenceIndexStatus: (
+    callback: (data: {
+      state: 'indexing' | 'complete' | 'error';
+      scope?: 'file' | 'all';
+      modeId?: string;
+      fileId?: string;
+      fileName?: string;
+      indexedFiles?: number;
+      embeddedChunks?: number;
+      embeddingSpace?: string;
+      error?: string;
+    }) => void,
+  ) => () => void;
   modesGetNoteSections: (modeId: string) => Promise<
     Array<{
       id: string;
@@ -1058,7 +1094,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
       | 'azure'
       | 'ibmwatson'
       | 'soniox'
-      | 'natively'
       | 'local-whisper',
   ) => ipcRenderer.invoke('set-stt-provider', provider),
   getSttProvider: () => ipcRenderer.invoke('get-stt-provider'),
@@ -1080,10 +1115,25 @@ contextBridge.exposeInMainWorld('electronAPI', {
   ) => ipcRenderer.invoke('test-stt-connection', provider, apiKey, region),
   localWhisperGetModels: () => ipcRenderer.invoke('local-whisper-get-models'),
   localWhisperSetModel: (modelId: string) => ipcRenderer.invoke('local-whisper-set-model', modelId),
+  localWhisperGetChannelConfig: () => ipcRenderer.invoke('local-whisper-get-channel-config'),
+  localWhisperSetChannelConfig: (config: {
+    enabled?: boolean;
+    micModelId?: string;
+    systemModelId?: string;
+  }) => ipcRenderer.invoke('local-whisper-set-channel-config', config),
   localWhisperDeleteModel: (modelId: string) =>
     ipcRenderer.invoke('local-whisper-delete-model', modelId),
-  localWhisperStartDownload: (modelId: string) =>
-    ipcRenderer.invoke('local-whisper-start-download', modelId),
+  localWhisperGetRuntime: () => ipcRenderer.invoke('local-whisper-get-runtime'),
+  localWhisperSetRuntime: (runtime: 'auto' | 'gpu' | 'cpu') =>
+    ipcRenderer.invoke('local-whisper-set-runtime', runtime),
+  localAiGetRuntime: () => ipcRenderer.invoke('local-ai-get-runtime'),
+  localAiSetRuntime: (runtime: 'auto' | 'gpu' | 'cpu') =>
+    ipcRenderer.invoke('local-ai-set-runtime', runtime),
+  localAiTestRuntime: () => ipcRenderer.invoke('local-ai-test-runtime'),
+  localWhisperStartDownload: (modelId: string, options?: { repair?: boolean }) =>
+    ipcRenderer.invoke('local-whisper-start-download', modelId, options),
+  localWhisperCancelDownload: (modelId: string) =>
+    ipcRenderer.invoke('local-whisper-cancel-download', modelId),
   onLocalWhisperDownloadProgress: (cb: (data: { modelId: string; progress: number }) => void) => {
     const listener = (_: any, data: any) => cb(data);
     ipcRenderer.on('local-whisper-download-progress', listener);
@@ -1107,8 +1157,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   embeddingModelSetModel: (modelId: string) => ipcRenderer.invoke('embedding-model-set-model', modelId),
   embeddingModelDeleteModel: (modelId: string) =>
     ipcRenderer.invoke('embedding-model-delete-model', modelId),
-  embeddingModelStartDownload: (modelId: string) =>
-    ipcRenderer.invoke('embedding-model-start-download', modelId),
+  embeddingModelStartDownload: (modelId: string, options?: { repair?: boolean }) =>
+    ipcRenderer.invoke('embedding-model-start-download', modelId, options),
+  embeddingModelCancelDownload: (modelId: string) =>
+    ipcRenderer.invoke('embedding-model-cancel-download', modelId),
   onEmbeddingModelDownloadProgress: (cb: (data: { modelId: string; progress: number }) => void) => {
     const listener = (_: any, data: any) => cb(data);
     ipcRenderer.on('embedding-model-download-progress', listener);
@@ -1208,6 +1260,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   setAiResponseLanguage: (language: string) =>
     ipcRenderer.invoke('set-ai-response-language', language),
   getSttLanguage: () => ipcRenderer.invoke('get-stt-language'),
+  setSttLanguage: (key: string) => ipcRenderer.invoke('set-stt-language', key),
   getAiResponseLanguage: () => ipcRenderer.invoke('get-ai-response-language'),
   onSttLanguageAutoDetected: (callback: (bcp47: string) => void) => {
     const subscription = (_: any, bcp47: string) => callback(bcp47);
@@ -1706,6 +1759,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   calendarConnect: () => ipcRenderer.invoke('calendar-connect'),
   calendarDisconnect: () => ipcRenderer.invoke('calendar-disconnect'),
   getCalendarStatus: () => ipcRenderer.invoke('get-calendar-status'),
+  calendarGetOAuthConfig: () => ipcRenderer.invoke('calendar-get-oauth-config'),
+  calendarSaveOAuthConfig: (config: { clientId?: string; clientSecret?: string }) =>
+    ipcRenderer.invoke('calendar-save-oauth-config', config),
   getUpcomingEvents: () => ipcRenderer.invoke('get-upcoming-events'),
   calendarRefresh: () => ipcRenderer.invoke('calendar-refresh'),
 
@@ -1884,11 +1940,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
     };
   },
 
-  // Donation API
-  getDonationStatus: () => ipcRenderer.invoke('get-donation-status'),
-  markDonationToastShown: () => ipcRenderer.invoke('mark-donation-toast-shown'),
-  setDonationComplete: () => ipcRenderer.invoke('set-donation-complete'),
-
   // Profile Engine API
   profileUploadResume: (filePath: string) => ipcRenderer.invoke('profile:upload-resume', filePath),
   profileGetStatus: () => ipcRenderer.invoke('profile:get-status'),
@@ -2061,6 +2112,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   modesUploadReferenceFile: (modeId: string) =>
     ipcRenderer.invoke('modes:upload-reference-file', modeId),
   modesDeleteReferenceFile: (id: string) => ipcRenderer.invoke('modes:delete-reference-file', id),
+  onModeReferenceIndexStatus: (callback: (data: any) => void) => {
+    const handler = (_evt: unknown, data: any) => callback(data);
+    ipcRenderer.on('mode-reference-index-status', handler);
+    return () => ipcRenderer.removeListener('mode-reference-index-status', handler);
+  },
   modesGetNoteSections: (modeId: string) => ipcRenderer.invoke('modes:get-note-sections', modeId),
   modesAddNoteSection: (modeId: string, title: string, description: string) =>
     ipcRenderer.invoke('modes:add-note-section', modeId, title, description),

@@ -101,7 +101,7 @@ export const isLayerAllowed = (plan: AnswerPlan, layer: ContextLayer): boolean =
   !plan.forbiddenContextLayers.includes(layer);
 
 /**
- * Compact, PII-free summary of the route for safe debug metadata / telemetry.
+ * Compact, PII-free summary of the route for safe debug metadata.
  * Layer NAMES and counts only — never content.
  */
 export const summarizeContextRoute = (route: ContextRoute): Record<string, unknown> => ({

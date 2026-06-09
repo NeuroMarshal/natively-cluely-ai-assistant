@@ -7,9 +7,6 @@ export type WhisperModelId =
   | 'Xenova/whisper-small.en'
   | 'Xenova/whisper-medium'
   | 'Xenova/whisper-medium.en'
-  // Whisper Large v3 Turbo — 6× faster than Large v3, ~equivalent WER,
-  // multilingual. ONNX-converted by the onnx-community.
-  | 'onnx-community/whisper-large-v3-turbo-ONNX'
   // Distil-Whisper — same architecture, distilled to 1/2 layers, ~6× faster
   // CPU/GPU inference at near-equivalent WER. English-only.
   | 'distil-whisper/distil-small.en'
@@ -34,6 +31,11 @@ export interface WhisperModelInfo {
   status: WhisperModelStatus;
   downloadProgress?: number;
   errorMessage?: string;
+  partial?: boolean;
+  partialBytes?: number;
+  downloadedBytes?: number;
+  totalBytes?: number;
+  currentFile?: string;
   requiresAppleSilicon?: boolean;
   // Distil-Whisper variants — surface in the UI so users can prefer them
   // when they want streaming-comparable latency.
@@ -48,6 +50,12 @@ export interface WorkerInitMessage {
   modelId: string;
   cacheDir: string;
   executionProviders?: string[];
+  device?: string;
+  runtimeBackend?: 'webgpu' | 'cpu';
+  sessionOptions?: Record<string, unknown>;
+  allowCpuFallback?: boolean;
+  /** True only for explicit Settings downloads/repairs. Runtime STT is local-only. */
+  allowRemoteModels?: boolean;
   // Per-module dtype map (see inferenceConfig.ts). String applies to all
   // ONNX files; Record keys are ONNX basenames without `.onnx`.
   dtype?: string | Record<string, string>;
@@ -76,11 +84,23 @@ export interface WorkerSetPromptMessage {
 }
 export type WorkerInMessage = WorkerInitMessage | WorkerTranscribeMessage | WorkerSetPromptMessage;
 
-export interface WorkerReadyResponse { type: 'ready'; }
+export interface WorkerReadyResponse { type: 'ready'; activeDevice?: 'webgpu' | 'cpu'; requestedDevice?: 'webgpu' | 'cpu'; }
 export interface WorkerResultResponse { type: 'result'; taskId: string; text: string; }
 export interface WorkerPartialResponse { type: 'partial'; taskId: string; text: string; }
-export interface WorkerErrorResponse { type: 'error'; taskId?: string; message: string; }
-export interface WorkerProgressResponse { type: 'progress'; modelId: string; progress: number; }
+export interface WorkerErrorResponse {
+  type: 'error';
+  taskId?: string;
+  message: string;
+  kind?: 'runtime' | 'model-files' | 'transcription';
+}
+export interface WorkerProgressResponse {
+  type: 'progress';
+  modelId: string;
+  progress: number;
+  loadedBytes?: number;
+  totalBytes?: number;
+  currentFile?: string;
+}
 export type WorkerOutMessage =
   | WorkerReadyResponse
   | WorkerResultResponse

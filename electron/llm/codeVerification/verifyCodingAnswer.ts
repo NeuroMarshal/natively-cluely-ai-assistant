@@ -6,7 +6,7 @@
 // It is dependency-injected: the model-correction call is passed in as a
 // `CorrectionFn` so this module stays pure-ish (no LLMHelper import, no cycle)
 // and fully unit-testable with a fake corrector + fake runner. The live wiring
-// in IntelligenceEngine supplies the real correction + emits telemetry/events.
+// in IntelligenceEngine supplies the real correction + emits local events.
 
 import type { TestCase, Verdict, VerificationOutcome, VerifyLanguage, RunResult, SqlSpec } from './types';
 import {
@@ -43,7 +43,7 @@ export interface VerifyCodingOptions {
   runSql?: RunSqlFn;
   /** Test-only override of language availability. */
   languageAvailable?: (lang: VerifyLanguage) => Promise<boolean>;
-  /** Telemetry sink (metadata only — never raw code/answer). */
+  /** Optional local event sink (metadata only — never raw code/answer). */
   onEvent?: (name: string, props?: Record<string, unknown>) => void;
 }
 

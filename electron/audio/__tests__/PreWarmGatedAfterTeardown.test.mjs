@@ -54,8 +54,6 @@ function makeFakeMic() {
 }
 
 const fakeNativeModule = {
-    getHardwareId: () => 'fake',
-    verifyGumroadKey: async () => 'fake',
     getInputDevices: () => [],
     getOutputDevices: () => [],
     SystemAudioCapture: function () { return { start() {}, stop() {}, getSampleRate: () => 48000 }; },

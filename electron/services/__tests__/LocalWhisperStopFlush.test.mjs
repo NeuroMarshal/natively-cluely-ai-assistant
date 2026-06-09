@@ -16,6 +16,9 @@ const flushPendingSource = source.slice(flushPendingStart, flushPendingEnd);
 const listenerStart = source.indexOf('    private attachWorkerListeners(): void');
 const listenerEnd = source.indexOf('    private flushPending(): void', listenerStart);
 const listenerSource = source.slice(listenerStart, listenerEnd);
+const terminateStart = source.indexOf('    private beginWorkerTermination');
+const terminateEnd = source.indexOf('    private terminateWorkerProcess', terminateStart);
+const terminateSource = source.slice(terminateStart, terminateEnd);
 
 test('LocalWhisperSTT.stop does not clear queued VAD finals before worker readiness', () => {
   assert.ok(stopStart >= 0, 'stop should exist');
@@ -31,4 +34,11 @@ test('LocalWhisperSTT drains queued stop-time finals before terminating worker',
   assert.match(listenerSource, /!this\.isActive && !\(this\.isDrainingFinals && msg\.type === 'result'\)/);
   assert.match(listenerSource, /this\.drainingFinalsInFlight = Math\.max\(0, this\.drainingFinalsInFlight - 1\);/);
   assert.match(listenerSource, /this\.beginWorkerTermination\(this\.worker\);/);
+});
+
+test('LocalWhisperSTT retains a termination timer for every retiring worker', () => {
+  assert.match(source, /workerTerminateTimers = new Set<ReturnType<typeof setTimeout>>\(\);/);
+  assert.doesNotMatch(terminateSource, /clearTimeout/);
+  assert.match(terminateSource, /this\.workerTerminateTimers\.add\(t\);/);
+  assert.match(terminateSource, /this\.workerTerminateTimers\.delete\(t\);[\s\S]*this\.terminateWorkerProcess\(w\);/);
 });

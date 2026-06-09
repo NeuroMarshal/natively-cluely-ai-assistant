@@ -1,6 +1,7 @@
 import path from 'path';
 import fs from 'fs';
 import type { WhisperModelId, WhisperModelInfo } from './types';
+import { isMultilingualWhisperModel } from './generationOptions';
 
 // env is configured lazily via configureTransformersCache()
 // We import the type only here; the actual require() happens at runtime.
@@ -18,8 +19,12 @@ const MODEL_CATALOG: WhisperModelInfo[] = [
   { id: 'distil-whisper/distil-large-v3',    name: 'Distil Large v3',  sizeMb: 731,  speed: 'medium',    accuracy: 'very-high', multilingual: false, status: 'missing', distilled: true },
   { id: 'distil-whisper/distil-large-v2',    name: 'Distil Large v2',  sizeMb: 731,  speed: 'medium',    accuracy: 'very-high', multilingual: false, status: 'missing', distilled: true },
 
-  // ── Whisper Large v3 Turbo — 6× faster than Large v3, multilingual.
-  { id: 'onnx-community/whisper-large-v3-turbo-ONNX', name: 'Whisper Large v3 Turbo', sizeMb: 1031, speed: 'medium', accuracy: 'very-high', multilingual: true, status: 'missing' },
+  // NOTE: onnx-community/whisper-large-v3-turbo-ONNX was removed. Its decoder
+  // export requires a `cache_position` input that @huggingface/transformers
+  // (3.8.1 AND 4.2.0) never supplies, so it LOADS but every transcribe throws
+  // "Missing the following inputs: cache_position". No compatible turbo export
+  // exists (Xenova/whisper-large-v3-turbo 404s). Multilingual high-accuracy is
+  // served by the Xenova whisper-small/medium entries below, which work.
 
   // ── Standard Whisper
   { id: 'Xenova/whisper-tiny.en',    name: 'Tiny English',    sizeMb: 39,   speed: 'very-fast', accuracy: 'decent',   multilingual: false, status: 'missing' },
@@ -28,9 +33,34 @@ const MODEL_CATALOG: WhisperModelInfo[] = [
   { id: 'Xenova/whisper-base',       name: 'Base Multilingual', sizeMb: 145, speed: 'fast',     accuracy: 'good',     multilingual: true,  status: 'missing' },
   { id: 'Xenova/whisper-small.en',   name: 'Small English',   sizeMb: 244,  speed: 'medium',    accuracy: 'high',     multilingual: false, status: 'missing' },
   { id: 'Xenova/whisper-small',      name: 'Small Multilingual', sizeMb: 466, speed: 'medium',  accuracy: 'high',     multilingual: true,  status: 'missing' },
-  { id: 'Xenova/whisper-medium.en',  name: 'Medium English',  sizeMb: 1500, speed: 'slow',      accuracy: 'very-high', multilingual: false, status: 'missing', requiresAppleSilicon: true },
-  { id: 'Xenova/whisper-medium',     name: 'Medium Multilingual', sizeMb: 1530, speed: 'slow',  accuracy: 'very-high', multilingual: true,  status: 'missing', requiresAppleSilicon: true },
+  { id: 'Xenova/whisper-medium.en',  name: 'Medium English',  sizeMb: 1500, speed: 'slow',      accuracy: 'very-high', multilingual: false, status: 'missing' },
+  { id: 'Xenova/whisper-medium',     name: 'Medium Multilingual', sizeMb: 1530, speed: 'slow',  accuracy: 'very-high', multilingual: true,  status: 'missing' },
 ];
+
+export const DEFAULT_LOCAL_WHISPER_MODEL_ID: WhisperModelId = 'Xenova/whisper-base';
+
+export function isKnownWhisperModel(id: unknown): id is WhisperModelId {
+  return typeof id === 'string' && MODEL_CATALOG.some(model => model.id === id);
+}
+
+/**
+ * The model the STT pipeline should actually load: the stored selection when it
+ * is still a known catalog model, otherwise the default. Guards against a stale
+ * setting pointing at a removed/renamed model (e.g. the dropped large-v3-turbo)
+ * — without this the worker would try to load a model that no longer exists and
+ * fail every transcribe. Mirrors resolveActiveEmbeddingModelId in RAG.
+ */
+export function resolveActiveWhisperModelId(selected: string | undefined | null): WhisperModelId {
+  return isKnownWhisperModel(selected) ? selected : DEFAULT_LOCAL_WHISPER_MODEL_ID;
+}
+
+export function getWhisperModelEntry(id: string): WhisperModelInfo | undefined {
+  return MODEL_CATALOG.find(model => model.id === id);
+}
+
+export function getWhisperModelName(id: string): string {
+  return getWhisperModelEntry(id)?.name ?? id;
+}
 
 /**
  * Returns the directory where Whisper models are stored.
@@ -55,7 +85,7 @@ export function configureTransformersCache(): void {
   (new Function('return import("@huggingface/transformers")')() as Promise<{ env: any }>)
     .then(({ env }) => {
       env.cacheDir = getModelsDir();
-      env.allowRemoteModels = true;
+      env.allowRemoteModels = false;
     })
     .catch(() => {});
 }
@@ -111,6 +141,50 @@ function expectedOnnxFiles(dtype: string | Record<string, string>) {
   return { encoder: enc, decoderOptions: [[merged], split] };
 }
 
+const EXTERNAL_DATA_SCAN_LIMIT_BYTES = 8 * 1024 * 1024;
+
+function externalDataRequirements(onnxFile: string): Map<string, number> {
+  const stat = fs.statSync(onnxFile);
+  if (stat.size > EXTERNAL_DATA_SCAN_LIMIT_BYTES) return new Map();
+
+  const body = fs.readFileSync(onnxFile).toString('latin1');
+  const requirements = new Map<string, number>();
+  const re = /location[\s\S]{0,80}?([A-Za-z0-9_.-]+\.onnx_data)[\s\S]{0,80}?offset[\s\S]{0,30}?(\d+)[\s\S]{0,80}?length[\s\S]{0,30}?(\d+)/g;
+  let match: RegExpExecArray | null;
+
+  while ((match = re.exec(body))) {
+    const fileName = match[1];
+    const offset = Number(match[2]);
+    const length = Number(match[3]);
+    if (!Number.isFinite(offset) || !Number.isFinite(length)) continue;
+    requirements.set(fileName, Math.max(requirements.get(fileName) ?? 0, offset + length));
+  }
+
+  return requirements;
+}
+
+export function hasRequiredExternalData(onnxFile: string): boolean {
+  try {
+    const requirements = externalDataRequirements(onnxFile);
+    if (requirements.size === 0) return true;
+
+    const dir = path.dirname(onnxFile);
+    for (const [fileName, requiredBytes] of requirements) {
+      const dataPath = path.join(dir, fileName);
+      if (!fs.existsSync(dataPath)) return false;
+      if (fs.statSync(dataPath).size < requiredBytes) return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function hasOnnxFile(onnxDir: string, fileName: string): boolean {
+  const filePath = path.join(onnxDir, fileName);
+  return fs.existsSync(filePath) && hasRequiredExternalData(filePath);
+}
+
 /**
  * Returns true when the cache contains the ONNX files the active dtype will
  * actually load. When `dtype` is omitted (legacy callers), falls back to a
@@ -135,8 +209,8 @@ export function isModelCached(modelId: WhisperModelId, dtype?: string | Record<s
   if (!fs.existsSync(onnxDir)) return false;
 
   const { encoder, decoderOptions } = expectedOnnxFiles(dtype);
-  if (!fs.existsSync(path.join(onnxDir, encoder))) return false;
-  return decoderOptions.some(opt => opt.every(f => fs.existsSync(path.join(onnxDir, f))));
+  if (!hasOnnxFile(onnxDir, encoder)) return false;
+  return decoderOptions.some(opt => opt.every(f => hasOnnxFile(onnxDir, f)));
 }
 
 /**
@@ -148,17 +222,44 @@ export function getAvailableModels(): WhisperModelInfo[] {
   // Resolve the active dtype lazily — avoids importing inferenceConfig at
   // module top (which would break the modelPreloader → modelManager require
   // chain on platforms where process info isn't yet available).
-  let dtype: string | Record<string, string> | undefined;
-  try {
-    const { resolveInferenceConfig } = require('./inferenceConfig');
-    dtype = resolveInferenceConfig().dtype;
-  } catch {
-    dtype = undefined; // fall back to legacy directory-non-empty check
+  return MODEL_CATALOG.map(m => {
+    let dtype: string | Record<string, string> | undefined;
+    try {
+      const { resolveInferenceConfig } = require('./inferenceConfig');
+      dtype = resolveInferenceConfig(undefined, m.id).dtype;
+    } catch {
+      dtype = undefined;
+    }
+    const modelDir = path.join(getModelsDir(), modelIdToCacheDir(m.id));
+    const partialBytes = directorySize(modelDir);
+    const available = isModelCached(m.id, dtype);
+    return {
+      ...m,
+      status: available ? 'available' : 'missing',
+      partial: !available && partialBytes > 0,
+      partialBytes,
+      multilingual: isMultilingualWhisperModel(m.id),
+    };
+  });
+}
+
+function directorySize(root: string): number {
+  if (!fs.existsSync(root)) return 0;
+  let total = 0;
+  const stack = [root];
+  while (stack.length > 0) {
+    const current = stack.pop()!;
+    try {
+      for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+        const fullPath = path.join(current, entry.name);
+        if (entry.isDirectory()) stack.push(fullPath);
+        else if (entry.isFile()) total += fs.statSync(fullPath).size;
+      }
+    } catch {
+      // A concurrent downloader may be replacing a temporary file.
+    }
   }
-  return MODEL_CATALOG.map(m => ({
-    ...m,
-    status: isModelCached(m.id, dtype) ? 'available' : 'missing',
-  }));
+  return total;
 }
 
 /**

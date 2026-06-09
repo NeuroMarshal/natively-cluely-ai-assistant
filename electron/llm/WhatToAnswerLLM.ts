@@ -50,6 +50,7 @@ type ModesManagerType = {
     getInstance: () => {
         getActiveModeSystemPromptSuffix: () => string;
         buildActiveModeContextBlock: () => string;
+        buildActiveModeDirectContextBlock: (answerType?: AnswerType) => string;
         buildRetrievedActiveModeContextBlock: (query: string, transcript?: string, tokenBudget?: number, answerType?: AnswerType) => string;
         // Phase 4: optional async hybrid retrieval (FTS + vector). Backwards
         // compatible — older builds without this method still work via the
@@ -168,6 +169,9 @@ ANSWER SHAPE: ${intentResult.answerShape}
             if (!activeSkill) {
                 try {
                     const modesManager = this.getModesManager();
+                    const directModeContext = modesManager.buildActiveModeDirectContextBlock(
+                        answerPlan?.answerType,
+                    );
                     // Phase 4 — prefer async hybrid retrieval (FTS + vector with
                     // lexical fallback inside the retriever). The hybrid method
                     // already falls back to lexical internally when embeddings
@@ -230,6 +234,9 @@ ANSWER SHAPE: ${intentResult.answerShape}
                     } else {
                         console.warn('[ScopeFallback] reference_files denied; Ollama unavailable, omitting from context');
                     }
+                    modeContextBlock = [directModeContext, modeContextBlock]
+                        .filter(Boolean)
+                        .join('\n\n');
                 } catch (_err: any) {
                     console.warn('[WhatToAnswerLLM] ModesManager unavailable:', _err?.message);
                 }
@@ -325,7 +332,7 @@ ANSWER SHAPE: ${intentResult.answerShape}
                 yield token;
             }
 
-            // Post-stream code sanity check. Fire-and-forget log + telemetry on
+            // Post-stream code sanity check. Fire-and-forget log on
             // hit; we deliberately do NOT auto-rewrite the answer because the
             // dry-run prose accompanying the buggy code is typically also wrong
             // and a single-line rewrite would produce an internally inconsistent

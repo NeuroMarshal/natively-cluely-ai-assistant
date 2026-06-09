@@ -120,23 +120,13 @@ const SettingsPopup = () => {
         if (isFirstRender.current) {
             isFirstRender.current = false;
             // Ensure backend is synced on mount (even if no change)
-            try {
-                // @ts-ignore
-                window.electronAPI?.invoke('set-groq-fast-text-mode', useGroqFastText);
-            } catch (e) {
-                console.error(e);
-            }
+            window.electronAPI?.setGroqFastTextMode?.(useGroqFastText).catch(console.error);
             return;
         }
 
         // Apply Groq Text Mode
         localStorage.setItem('natively_groq_fast_text', String(useGroqFastText));
-        try {
-            // @ts-ignore - electronAPI not typed in this file yet
-            window.electronAPI?.invoke('set-groq-fast-text-mode', useGroqFastText);
-        } catch (e) {
-            console.error(e);
-        }
+        window.electronAPI?.setGroqFastTextMode?.(useGroqFastText).catch(console.error);
     }, [useGroqFastText]);
 
     const [actionButtonMode, setActionButtonModeState] = useState<'recap' | 'brainstorm'>('recap');

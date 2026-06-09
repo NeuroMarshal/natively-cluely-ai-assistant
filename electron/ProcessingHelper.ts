@@ -95,23 +95,36 @@ export class ProcessingHelper {
     const ragManager = this.appState.getRAGManager();
     if (ragManager) {
       console.log("[ProcessingHelper] Initializing RAGManager embeddings with available keys");
-      ragManager.initializeEmbeddings({
-          openaiKey: openaiKey || undefined,
-          geminiKey: geminiKey || undefined,
-          // ollamaUrl is not fetched in CredentialsManager yet by default, but we pass these keys
-          providerDataScopes: (() => { try { const { SettingsManager } = require('./services/SettingsManager'); return SettingsManager.getInstance().get('providerDataScopes'); } catch { return undefined; } })()
-      });
+      const settings = (() => {
+        try {
+          const { SettingsManager } = require('./services/SettingsManager');
+          return SettingsManager.getInstance();
+        } catch {
+          return null;
+        }
+      })();
 
-      // CRITICAL: Retry pending embeddings now that we have a key
-      // This ensures any meetings that failed or were queued during startup get processed
-      console.log("[ProcessingHelper] Retrying pending embeddings...");
-      ragManager.retryPendingEmbeddings().catch(console.error);
+      void (async () => {
+        await ragManager.initializeEmbeddings({
+            openaiKey: openaiKey || undefined,
+            geminiKey: geminiKey || undefined,
+            // ollamaUrl is not fetched in CredentialsManager yet by default, but we pass these keys
+            localEmbeddingModel: settings?.get('localEmbeddingModel'),
+            providerDataScopes: settings?.get('providerDataScopes')
+        });
 
-      // CRITICAL: Ensure demo meeting has chunks
-      ragManager.ensureDemoMeetingProcessed().catch(console.error);
+        // CRITICAL: Retry pending embeddings only after the provider is ready.
+        // Otherwise startup races log "No provider" and leave the queue for a
+        // later incidental flush.
+        console.log("[ProcessingHelper] Retrying pending embeddings...");
+        await ragManager.retryPendingEmbeddings();
 
-      // CRITICAL: Cleanup stale queue items to prevent "Chunk not found" errors
-      ragManager.cleanupStaleQueueItems();
+        // CRITICAL: Ensure demo meeting has chunks
+        await ragManager.ensureDemoMeetingProcessed();
+
+        // CRITICAL: Cleanup stale queue items to prevent "Chunk not found" errors
+        ragManager.cleanupStaleQueueItems();
+      })().catch(console.error);
     }
 
     // Initialize self-improving model version manager (background, non-blocking)

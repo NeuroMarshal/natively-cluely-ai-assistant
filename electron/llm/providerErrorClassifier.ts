@@ -26,7 +26,7 @@ export interface ProviderErrorClassification {
   isOutage: boolean;
   /** True when the product MAY safely retry/hedge/fallback. */
   retryable: boolean;
-  /** Short code for telemetry (no raw content). */
+  /** Short code for debug metadata (no raw content). */
   code: string;
 }
 

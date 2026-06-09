@@ -182,14 +182,14 @@ describe('classifier edge cases', () => {
   });
 });
 
-describe('summarizeCustomContextSelection — PII-free telemetry', () => {
+describe('summarizeCustomContextSelection — PII-free debug summary', () => {
   test('summary carries counts + categories only, never raw content', () => {
     const blob = 'Be concise.\n\nMy CTC is 30 LPA.';
     const classified = classifyCustomContext(blob);
     const sel = selectCustomContextForAnswer(classified, 'behavioral_interview_answer');
     const summary = summarizeCustomContextSelection(sel, classified);
     const serialized = JSON.stringify(summary);
-    assert.doesNotMatch(serialized, /30 LPA|CTC|concise/, 'no raw content in telemetry');
+    assert.doesNotMatch(serialized, /30 LPA|CTC|concise/, 'no raw content in debug summary');
     assert.equal(summary.sensitive, 1);
     assert.equal(summary.sensitiveIncluded, false);
     assert.ok(Array.isArray(summary.excluded));

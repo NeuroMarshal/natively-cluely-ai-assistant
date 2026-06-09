@@ -145,6 +145,7 @@ export class DatabaseManager {
 
             this.db = new Database(this.dbPath);
             this.db.pragma('journal_mode = WAL');
+            this.db.pragma('foreign_keys = ON');
 
             // Load sqlite-vec extension for native vector search
             try {
@@ -812,11 +813,42 @@ export class DatabaseManager {
     }
 
     public deleteMode(id: string): void {
-        if (!this.db) return;
+        if (!this.db) throw new Error('Database not initialized');
         try {
-            this.db.prepare('DELETE FROM modes WHERE id = ?').run(id);
+            const txn = this.db.transaction(() => {
+                const exists = this.db!.prepare('SELECT 1 FROM modes WHERE id = ?').get(id);
+                if (!exists) throw new Error('Mode not found');
+
+                const files = this.db!.prepare(
+                    'SELECT id FROM mode_reference_files WHERE mode_id = ?'
+                ).all(id) as Array<{ id: string }>;
+                const fileIds = files.map(file => file.id);
+                if (fileIds.length > 0) {
+                    const placeholders = fileIds.map(() => '?').join(', ');
+                    const tables = this.db!.prepare(
+                        `SELECT name FROM sqlite_master
+                         WHERE type = 'table'
+                           AND name IN ('mode_reference_index_state', 'mode_reference_chunk_embeddings')`
+                    ).all() as Array<{ name: string }>;
+                    const tableNames = new Set(tables.map(row => row.name));
+                    if (tableNames.has('mode_reference_index_state')) {
+                        this.db!.prepare(
+                            `DELETE FROM mode_reference_index_state WHERE file_id IN (${placeholders})`
+                        ).run(...fileIds);
+                    }
+                    if (tableNames.has('mode_reference_chunk_embeddings')) {
+                        this.db!.prepare(
+                            `DELETE FROM mode_reference_chunk_embeddings WHERE file_id IN (${placeholders})`
+                        ).run(...fileIds);
+                    }
+                }
+
+                this.db!.prepare('DELETE FROM modes WHERE id = ?').run(id);
+            });
+            txn();
         } catch (e) {
             console.error('[DatabaseManager] deleteMode failed:', e);
+            throw e;
         }
     }
 
@@ -862,11 +894,32 @@ export class DatabaseManager {
     }
 
     public deleteReferenceFile(id: string): void {
-        if (!this.db) return;
+        if (!this.db) throw new Error('Database not initialized');
         try {
-            this.db.prepare('DELETE FROM mode_reference_files WHERE id = ?').run(id);
+            const txn = this.db.transaction(() => {
+                const exists = this.db!.prepare(
+                    'SELECT 1 FROM mode_reference_files WHERE id = ?'
+                ).get(id);
+                if (!exists) throw new Error('Reference file not found');
+
+                const tables = this.db!.prepare(
+                    `SELECT name FROM sqlite_master
+                     WHERE type = 'table'
+                       AND name IN ('mode_reference_index_state', 'mode_reference_chunk_embeddings')`
+                ).all() as Array<{ name: string }>;
+                const tableNames = new Set(tables.map(row => row.name));
+                if (tableNames.has('mode_reference_index_state')) {
+                    this.db!.prepare('DELETE FROM mode_reference_index_state WHERE file_id = ?').run(id);
+                }
+                if (tableNames.has('mode_reference_chunk_embeddings')) {
+                    this.db!.prepare('DELETE FROM mode_reference_chunk_embeddings WHERE file_id = ?').run(id);
+                }
+                this.db!.prepare('DELETE FROM mode_reference_files WHERE id = ?').run(id);
+            });
+            txn();
         } catch (e) {
             console.error('[DatabaseManager] deleteReferenceFile failed:', e);
+            throw e;
         }
     }
 
@@ -1593,7 +1646,7 @@ To activate:
 2. Click **Get started for free**
 3. Sign in with a Google account
 4. Add billing details (card required)
-5. Activate the free trial
+5. Enable the local-first onboarding path
 
 The credit can be used for Speech-to-Text and is sufficient for extended testing and regular usage.
 

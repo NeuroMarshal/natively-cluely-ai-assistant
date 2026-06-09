@@ -1568,9 +1568,9 @@ export const HelpSettings: React.FC<{ onNavigate?: (tab: string) => void }> = ()
                     </div>
                 </AccordionSection>
 
-                <AccordionSection title="8. Modes Manager" icon={<LayoutGrid className="w-4 h-4" />}>
+                <AccordionSection title="8. Presets" icon={<LayoutGrid className="w-4 h-4" />}>
                     <div className="space-y-6">
-                        <p className="text-[13px]">Modes let you assign a specialized AI persona to your session. Each mode has a tailored system prompt, a personal context area, reference files, and smart note template sections — so Natively behaves differently depending on whether you're in a sales call, a coding interview, or a team standup.</p>
+                        <p className="text-[13px]">Presets adapt the assistant to a situation. Each preset has direct context, searchable reference files, and tailored note sections for sales calls, interviews, lectures, and team meetings.</p>
 
                         <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
                             {([
@@ -1589,7 +1589,7 @@ export const HelpSettings: React.FC<{ onNavigate?: (tab: string) => void }> = ()
                         </div>
 
                         <div className="space-y-3 pt-2 border-t border-border-subtle">
-                            <h4 className="font-bold text-sm text-text-primary pt-4">How to Use Modes</h4>
+                            <h4 className="font-bold text-sm text-text-primary pt-4">How to Use Presets</h4>
                             <div className="grid md:grid-cols-2 gap-3">
                                 <div className="p-4 rounded-xl border bg-bg-item-surface border-border-subtle">
                                     <h4 className="font-semibold text-sm mb-2 text-text-primary">Opening the Manager</h4>
@@ -1618,7 +1618,7 @@ export const HelpSettings: React.FC<{ onNavigate?: (tab: string) => void }> = ()
                                     </ul>
                                 </div>
                                 <div className="p-4 rounded-xl border bg-bg-item-surface border-border-subtle">
-                                    <h4 className="font-semibold text-sm mb-2 text-text-primary">Custom Modes & Templates</h4>
+                                    <h4 className="font-semibold text-sm mb-2 text-text-primary">Custom Presets & Templates</h4>
                                     <ul className="text-[11px] text-text-secondary space-y-1 list-disc pl-4">
                                         <li>Click <strong>+ New Mode</strong> for a blank slate</li>
                                         <li>Browse the <strong>Templates Gallery</strong> for ready-made personas</li>

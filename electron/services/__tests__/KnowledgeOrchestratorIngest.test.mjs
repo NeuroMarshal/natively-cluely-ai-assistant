@@ -40,7 +40,7 @@ Software Engineer | Notion | 2018-06 - 2021-02
 Technologies: TypeScript, Node.js, PostgreSQL
 
 Software Engineer | Cruise Automation | 2016-07 - 2018-05
-- Developed telemetry dashboards for autonomous vehicles
+- Developed fleet diagnostics dashboards for autonomous vehicles
 Technologies: Python, React, Spark
 
 PROJECTS
@@ -100,7 +100,7 @@ const MOCK_GENERATE_CONTENT = async (contents) => {
             experience: [
                 { company: 'Stripe', role: 'Senior Software Engineer', start_date: '2021-03', end_date: null, bullets: ['Led fraud detection pipeline'] },
                 { company: 'Notion', role: 'Software Engineer', start_date: '2018-06', end_date: '2021-02', bullets: ['Built commenting system'] },
-                { company: 'Cruise Automation', role: 'Software Engineer', start_date: '2016-07', end_date: '2018-05', bullets: ['Telemetry dashboards'] }
+                { company: 'Cruise Automation', role: 'Software Engineer', start_date: '2016-07', end_date: '2018-05', bullets: ['Fleet diagnostics dashboards'] }
             ],
             projects: [{ name: 'PriceX', description: 'Price comparison extension', technologies: ['React', 'Node.js'], url: '' }],
             education: [{ institution: 'Stanford', degree: 'BS', field: 'CS', start_date: '2012-09', end_date: '2016-06', gpa: '' }],

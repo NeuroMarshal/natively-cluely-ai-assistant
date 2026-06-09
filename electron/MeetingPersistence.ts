@@ -7,7 +7,6 @@ import { LLMHelper } from './LLMHelper';
 import { DatabaseManager, Meeting } from './db/DatabaseManager';
 import { GROQ_TITLE_PROMPT, GROQ_SUMMARY_JSON_PROMPT } from './llm';
 import { buildPostCallEnhancements } from './services/post-call/PostCallWorkflow';
-import { telemetryService } from './services/telemetry/TelemetryService';
 import type { ProviderDataScopePolicy } from './llm/ProviderRouter';
 const crypto = require('crypto');
 
@@ -38,9 +37,8 @@ export class MeetingPersistence {
             return null;
         }
 
-        // Phase 9 — privacy gate: 'never' retention or per-meeting do-not-persist
-        // skips persistence entirely. We still emit telemetry (sanitized) so
-        // usage analytics work, but NO transcript / NO summary / NO DB row.
+        // Privacy gate: 'never' retention or per-meeting do-not-persist skips
+        // persistence entirely: NO transcript / NO summary / NO DB row.
         let doNotPersist = false;
         try {
             const { SettingsManager } = require('./services/SettingsManager');
@@ -56,13 +54,6 @@ export class MeetingPersistence {
         }
         if (doNotPersist) {
             console.log('[MeetingPersistence] doNotPersist set — skipping save (no DB row, no summary).');
-            try {
-                const { telemetryService } = require('./services/telemetry/TelemetryService');
-                telemetryService.track({
-                    name: 'meeting_stop',
-                    properties: { persisted: false, reason: 'do_not_persist', durationMs },
-                });
-            } catch { /* non-fatal */ }
             this.session.reset();
             return null;
         }
@@ -146,20 +137,8 @@ export class MeetingPersistence {
     ): Promise<void> {
         let title = "Untitled Session";
         let summaryData: { overview?: string; actionItems: string[], keyPoints: string[], sections?: Array<{ title: string; bullets: string[] }> } = { actionItems: [], keyPoints: [] };
-        // Phase 6 — post_call_summary lifecycle telemetry. Wrapped in try/catch
-        // around track calls so a telemetry sink fault never breaks persistence.
         const _postCallStart = Date.now();
-        try {
-            telemetryService.track({
-                name: 'post_call_summary_started',
-                modeId: modeSnapshot?.id,
-                properties: {
-                    modeTemplateType: modeSnapshot?.templateType,
-                    transcriptSegmentCount: data.transcript.length,
-                    durationMs: data.durationMs,
-                },
-            });
-        } catch { /* non-fatal */ }
+        void _postCallStart;
 
         // Use passed-in metadata snapshot (NOT this.session.getMeetingMetadata() which is already cleared)
         let calendarEventId: string | undefined;
@@ -375,33 +354,8 @@ Return ONLY valid JSON (no markdown code blocks):
             const wins = require('electron').BrowserWindow.getAllWindows();
             wins.forEach((w: any) => w.webContents.send('meetings-updated'));
 
-            // Phase 6 — post_call_summary_completed (no transcript / no summary text;
-            // counts and durations only).
-            try {
-                const enhancements = (summaryData as any) || {};
-                telemetryService.track({
-                    name: 'post_call_summary_completed',
-                    modeId: modeSnapshot?.id,
-                    durationMs: Date.now() - _postCallStart,
-                    properties: {
-                        modeTemplateType: modeSnapshot?.templateType,
-                        actionItemCount: Array.isArray(enhancements.actionItemsStructured) ? enhancements.actionItemsStructured.length : 0,
-                        coachingInsightCount: Array.isArray(enhancements.coachingInsights) ? enhancements.coachingInsights.length : 0,
-                        sectionsCount: Array.isArray(enhancements.sections) ? enhancements.sections.length : 0,
-                    },
-                });
-            } catch { /* non-fatal */ }
-
         } catch (error) {
             console.error('[MeetingPersistence] Failed to save meeting:', error);
-            try {
-                telemetryService.track({
-                    name: 'post_call_summary_failed',
-                    modeId: modeSnapshot?.id,
-                    durationMs: Date.now() - _postCallStart,
-                    properties: { errorClass: (error as Error)?.constructor?.name ?? 'Unknown' },
-                });
-            } catch { /* non-fatal */ }
         }
     }
 

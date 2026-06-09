@@ -1,7 +1,7 @@
-import React, { useEffect, useRef } from 'react';
+import React from 'react';
 import {
     Github, Twitter, Shield, Cpu, Database,
-    Heart, Linkedin, Instagram, Mail, MicOff, Star, Bug, Globe, Sparkles, Zap, Camera, LayoutGrid, User, Volume2, Activity, MessageSquare, Link, Smartphone, Calendar, ListTodo, Users, WifiOff, Send
+    Linkedin, Instagram, Mail, MicOff, Star, Bug, Globe, Sparkles, Zap, Camera, LayoutGrid, User, Volume2, Activity, MessageSquare, Link, Smartphone, Calendar, ListTodo, Users, WifiOff, Send
 } from 'lucide-react';
 import evinProfile from '../assets/evin.png';
 import { useResolvedTheme } from '../hooks/useResolvedTheme';
@@ -11,40 +11,9 @@ interface AboutSectionProps { }
 
 export const AboutSection: React.FC<AboutSectionProps> = () => {
     const isLight = useResolvedTheme() === 'light';
-    const donationClickTimeRef = useRef<number | null>(null);
-
-    // Initial check for donation status not needed for visuals anymore (since we removed key input)
-    // but we might want to hide the support button if donated? 
-    // User said "wont show if the user open the donate button" -> this refers to the toaster.
-    // For About section, usually validation/support button stays but maybe changes text?
-    // I'll keep it as is, just the logic change.
-
-    useEffect(() => {
-        const handleFocus = async () => {
-            if (donationClickTimeRef.current) {
-                const elapsed = Date.now() - donationClickTimeRef.current;
-                if (elapsed > 20000) { // 20 seconds
-                    console.log("User returned after >20s. Marking as donated.");
-                    await window.electronAPI?.setDonationComplete();
-                    donationClickTimeRef.current = null; // Reset
-                } else {
-                    console.log("User returned too quickly (<20s). Not confirming donation.");
-                    donationClickTimeRef.current = null;
-                }
-            }
-        };
-
-        window.addEventListener('focus', handleFocus);
-        return () => window.removeEventListener('focus', handleFocus);
-    }, []);
 
     const handleOpenLink = (e: React.MouseEvent<HTMLAnchorElement>, url: string) => {
         e.preventDefault();
-
-        // Special handling for donation link
-        if (url.includes('buymeacoffee.com')) {
-            donationClickTimeRef.current = Date.now();
-        }
 
         // Use backend shell.openExternal
         if (window.electronAPI?.openExternal) {
@@ -118,9 +87,9 @@ export const AboutSection: React.FC<AboutSectionProps> = () => {
                                 <Activity size={20} />
                             </div>
                             <div>
-                                <h5 className="text-sm font-bold text-text-primary mb-1">Optimized Modes Manager</h5>
+                                <h5 className="text-sm font-bold text-text-primary mb-1">Optimized Presets</h5>
                                 <p className="text-xs text-text-secondary leading-relaxed">
-                                    The Profile Intelligence matrix and Modes Manager have been optimized like crazy for responsive, ultra-low latency context processing.
+                                    Profile Intelligence and Presets are optimized for responsive, low-latency context processing.
                                 </p>
                             </div>
                         </div>
@@ -374,25 +343,6 @@ export const AboutSection: React.FC<AboutSectionProps> = () => {
                         </a>
                     </div>
 
-                    {/* 4. Support */}
-                    <div className="bg-bg-item-surface rounded-xl border border-border-subtle p-5 flex flex-col md:flex-row items-center justify-between gap-4">
-                        <div className="flex items-center gap-4">
-                            <div className="w-10 h-10 rounded-full bg-pink-500/10 flex items-center justify-center text-pink-500 shadow-sm shadow-pink-500/5">
-                                <Heart size={18} fill="currentColor" className="opacity-80" />
-                            </div>
-                            <div>
-                                <h5 className="text-sm font-bold text-text-primary">Support Development</h5>
-                                <p className="text-xs text-text-secondary mt-0.5">Natively is independent open-source software.</p>
-                            </div>
-                        </div>
-                        <a
-                            href="https://buymeacoffee.com/evinjohnn"
-                            onClick={(e) => handleOpenLink(e, "https://buymeacoffee.com/evinjohnn")}
-                            className="whitespace-nowrap px-4 py-2 bg-text-primary hover:bg-white/90 text-bg-main text-xs font-bold rounded-lg transition-all shadow hover:shadow-lg hover:-translate-y-0.5 active:translate-y-0"
-                        >
-                            Support Project
-                        </a>
-                    </div>
                 </div>
             </div>
 

@@ -5,7 +5,7 @@
 // pre-warm for the next meeting. If that constructor throws (e.g. CoreAudio HAL
 // transient failure, cpal init error, USB device yanked between stop and
 // pre-warm), the previous implementation only console.error'd the failure. No
-// event was emitted, so main.ts / AudioRecovery / telemetry had no observability
+// event was emitted, so main.ts / AudioRecovery had no observability
 // hook — the next start()'s defensive re-init would surface a generic error far
 // removed from the original cause.
 //
@@ -53,8 +53,6 @@ function makeFakeMicInstance() {
 }
 
 const fakeNativeModule = {
-    getHardwareId: () => 'fake-hw',
-    verifyGumroadKey: async () => 'fake',
     getInputDevices: () => [],
     getOutputDevices: () => [],
     SystemAudioCapture: function SystemAudioCaptureCtor(_deviceId) {

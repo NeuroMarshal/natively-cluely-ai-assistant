@@ -12,9 +12,9 @@
 //     screenshot is not re-encoded twice in the same session
 //
 // Notes:
-//   - Sharp is already a project dep (used elsewhere for OCR preprocessing and
-//     Natively-API image compression). We centralize provider-ready optimization
-//     here so the vision pipeline has a single source of truth for sizes/quality.
+//   - Sharp is already a project dep (used elsewhere for OCR preprocessing).
+//     We centralize provider-ready optimization here so the vision pipeline has
+//     a single source of truth for sizes/quality.
 //   - We do NOT delete optimized files immediately — VisionProviderFallbackChain
 //     may retry the same payload across providers in one request. Callers should
 //     invoke `cleanup()` after the request completes, or rely on `cleanupAll()`
@@ -33,7 +33,6 @@ export type ProviderHint =
   | 'gemini'
   | 'groq'
   | 'ollama'
-  | 'natively'
   | 'codex'
   | 'custom'
   | 'generic';
@@ -81,10 +80,6 @@ function applyProviderTweaks(
     case 'ollama':
       // Local — keep buffer reasonable so base64 payload doesn't choke HTTP.
       return { ...base, format: 'jpeg' };
-    case 'natively':
-      // Server enforces a 4 MB body cap; the per-image quality bump used in
-      // streamWithNatively (q=85, 1920px) is consistent with the 'best' profile.
-      return base;
     case 'gemini':
     case 'openai':
     case 'claude':

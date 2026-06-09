@@ -1,26 +1,35 @@
-import { app, safeStorage, shell, net } from 'electron';
+import { app, safeStorage, shell } from 'electron';
 import http from 'http';
 import url from 'url';
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import { EventEmitter } from 'events';
+import { SettingsManager } from './SettingsManager';
 
 // Configuration — direct Google OAuth (no hosted proxy).
 // Installed-app flow: loopback redirect + PKCE. Bring your own OAuth client via
-// env. GOOGLE_CLIENT_ID is required. GOOGLE_CLIENT_SECRET is required for Google
-// "Desktop app" client types (Google still expects it on the token request — for
-// installed apps it is NOT treated as confidential) and may be omitted for client
-// types that accept PKCE alone.
-const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || "YOUR_CLIENT_ID_HERE";
-const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || "";
-const REDIRECT_URI = "http://localhost:11111/auth/callback";
+// env or local settings. GOOGLE_CLIENT_ID is required. GOOGLE_CLIENT_SECRET may
+// be omitted for PKCE-capable desktop clients.
+const DEFAULT_GOOGLE_CLIENT_ID = "YOUR_CLIENT_ID_HERE";
 const SCOPES = ["https://www.googleapis.com/auth/calendar.readonly"];
 const TOKEN_PATH = path.join(app.getPath('userData'), 'calendar_tokens.enc');
 const GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token';
 
-if (GOOGLE_CLIENT_ID === "YOUR_CLIENT_ID_HERE") {
-    console.warn('[CalendarManager] GOOGLE_CLIENT_ID is using the default placeholder. Calendar features will not work until a valid client ID is provided via env var or build config.');
+function readOAuthConfig(): { clientId: string; clientSecret: string } {
+    let settingsClientId = '';
+    let settingsClientSecret = '';
+    try {
+        const settings = SettingsManager.getInstance();
+        settingsClientId = settings.get('googleCalendarClientId') || '';
+        settingsClientSecret = settings.get('googleCalendarClientSecret') || '';
+    } catch {
+        // SettingsManager is only available after app ready; env still works.
+    }
+    return {
+        clientId: (settingsClientId || process.env.GOOGLE_CLIENT_ID || '').trim(),
+        clientSecret: (settingsClientSecret || process.env.GOOGLE_CLIENT_SECRET || '').trim(),
+    };
 }
 
 export interface CalendarAttendee {
@@ -66,16 +75,28 @@ export class CalendarManager extends EventEmitter {
         this.loadTokens();
     }
 
+    public getOAuthConfigStatus(): { configured: boolean; clientId?: string } {
+        const { clientId } = readOAuthConfig();
+        return {
+            configured: !!clientId && clientId !== DEFAULT_GOOGLE_CLIENT_ID,
+            clientId: clientId && clientId !== DEFAULT_GOOGLE_CLIENT_ID ? clientId : undefined,
+        };
+    }
+
+    public setOAuthConfig(config: { clientId?: string; clientSecret?: string }): void {
+        const settings = SettingsManager.getInstance();
+        settings.set('googleCalendarClientId', (config.clientId || '').trim());
+        settings.set('googleCalendarClientSecret', (config.clientSecret || '').trim());
+    }
+
     // =========================================================================
     // Auth Flow
     // =========================================================================
 
     public async startAuthFlow(): Promise<void> {
-        // Refuse to start if the client ID isn't configured — otherwise we'd
-        // open a Google page that says "OAuth client not found", the user
-        // never hits the callback, and the loopback server below leaks.
-        if (GOOGLE_CLIENT_ID === "YOUR_CLIENT_ID_HERE") {
-            throw new Error('GOOGLE_CLIENT_ID is not configured. Set it in .env and restart the app.');
+        const oauth = readOAuthConfig();
+        if (!oauth.clientId || oauth.clientId === DEFAULT_GOOGLE_CLIENT_ID) {
+            throw new Error('Google Calendar OAuth client ID is not configured.');
         }
 
         this.authCodeVerifier = crypto.randomBytes(32).toString('base64url');
@@ -94,8 +115,10 @@ export class CalendarManager extends EventEmitter {
             // 1. Create Loopback Server
             const server = http.createServer(async (req, res) => {
                 try {
-                    if (req.url?.startsWith('/auth/callback')) {
-                        const qs = new url.URL(req.url, 'http://localhost:11111').searchParams;
+                    if (req.url?.startsWith('/oauth2callback') || req.url?.startsWith('/auth/callback')) {
+                        const redirectUri = this.currentRedirectUri;
+                        if (!redirectUri) throw new Error('Calendar OAuth redirect URI missing');
+                        const qs = new url.URL(req.url, redirectUri).searchParams;
                         const code = qs.get('code');
                         const error = qs.get('error');
                         const state = qs.get('state');
@@ -116,7 +139,7 @@ export class CalendarManager extends EventEmitter {
                             res.end('Authentication successful! You can close this window and return to Natively.');
                             // Exchange code for tokens. If this throws, still finish so the server closes.
                             try {
-                                await this.exchangeCodeForToken(code);
+                                await this.exchangeCodeForToken(code, redirectUri, oauth);
                                 finish(() => resolve());
                             } catch (err) {
                                 finish(() => reject(err));
@@ -134,9 +157,12 @@ export class CalendarManager extends EventEmitter {
                 finish(() => reject(new Error('Calendar auth timed out — port released.')));
             }, 5 * 60 * 1000);
 
-            server.listen(11111, () => {
+            server.listen(0, '127.0.0.1', () => {
                 // 3. Open Browser
-                const authUrl = this.getAuthUrl();
+                const addr = server.address();
+                const port = typeof addr === 'object' && addr ? addr.port : 0;
+                this.currentRedirectUri = `http://127.0.0.1:${port}/oauth2callback`;
+                const authUrl = this.getAuthUrl(this.currentRedirectUri, oauth.clientId);
                 shell.openExternal(authUrl);
             });
 
@@ -165,7 +191,9 @@ export class CalendarManager extends EventEmitter {
         return { connected: this.isConnected };
     }
 
-    private getAuthUrl(): string {
+    private currentRedirectUri: string | null = null;
+
+    private getAuthUrl(redirectUri: string, clientId: string): string {
         if (!this.authCodeVerifier || !this.authState) {
             throw new Error('Calendar OAuth flow was not initialized');
         }
@@ -174,8 +202,8 @@ export class CalendarManager extends EventEmitter {
             .update(this.authCodeVerifier)
             .digest('base64url');
         const params = new URLSearchParams({
-            client_id: GOOGLE_CLIENT_ID,
-            redirect_uri: REDIRECT_URI,
+            client_id: clientId,
+            redirect_uri: redirectUri,
             response_type: 'code',
             scope: SCOPES.join(' '),
             access_type: 'offline', // For refresh token
@@ -187,17 +215,17 @@ export class CalendarManager extends EventEmitter {
         return `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`;
     }
 
-    private async exchangeCodeForToken(code: string) {
+    private async exchangeCodeForToken(code: string, redirectUri: string, oauth: { clientId: string; clientSecret: string }) {
         try {
             if (!this.authCodeVerifier) throw new Error('Calendar OAuth verifier is missing');
             const params = new URLSearchParams({
-                client_id: GOOGLE_CLIENT_ID,
+                client_id: oauth.clientId,
                 code,
                 code_verifier: this.authCodeVerifier,
                 grant_type: 'authorization_code',
-                redirect_uri: REDIRECT_URI,
+                redirect_uri: redirectUri,
             });
-            if (GOOGLE_CLIENT_SECRET) params.set('client_secret', GOOGLE_CLIENT_SECRET);
+            if (oauth.clientSecret) params.set('client_secret', oauth.clientSecret);
 
             const response = await fetch(GOOGLE_TOKEN_URL, {
                 method: 'POST',
@@ -219,6 +247,7 @@ export class CalendarManager extends EventEmitter {
         } finally {
             this.authCodeVerifier = null;
             this.authState = null;
+            this.currentRedirectUri = null;
         }
     }
 
@@ -268,12 +297,16 @@ export class CalendarManager extends EventEmitter {
         }
 
         try {
+            const oauth = readOAuthConfig();
+            if (!oauth.clientId || oauth.clientId === DEFAULT_GOOGLE_CLIENT_ID) {
+                throw new Error('Google Calendar OAuth client ID is not configured.');
+            }
             const params = new URLSearchParams({
-                client_id: GOOGLE_CLIENT_ID,
+                client_id: oauth.clientId,
                 refresh_token: this.refreshToken,
                 grant_type: 'refresh_token',
             });
-            if (GOOGLE_CLIENT_SECRET) params.set('client_secret', GOOGLE_CLIENT_SECRET);
+            if (oauth.clientSecret) params.set('client_secret', oauth.clientSecret);
 
             const response = await fetch(GOOGLE_TOKEN_URL, {
                 method: 'POST',

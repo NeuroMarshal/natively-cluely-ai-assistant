@@ -11,6 +11,10 @@
  *       __dirname = dist-electron/electron/
  *       worker stays at its source-mirrored location → audio/whisper/whisperWorker.js
  *
+ *   - Bundled into an audio entry (LocalWhisperSTT.js):
+ *       __dirname = dist-electron/electron/audio/
+ *       worker stays in the whisper subfolder → whisper/whisperWorker.js
+ *
  * Because this resolver is itself bundled alongside its callers, its own
  * __dirname tracks the bundling state — so callers don't need to pass anything.
  */
@@ -28,6 +32,7 @@ export function findFirstExistingPath(
 export function resolveWhisperWorkerPath(): string {
     return findFirstExistingPath([
         path.join(__dirname, 'whisperWorker.js'),
+        path.join(__dirname, 'whisper', 'whisperWorker.js'),
         path.join(__dirname, 'audio', 'whisper', 'whisperWorker.js'),
     ]);
 }

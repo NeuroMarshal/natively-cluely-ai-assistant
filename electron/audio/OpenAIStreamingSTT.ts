@@ -101,7 +101,7 @@ export class OpenAIStreamingSTT extends EventEmitter {
     private keepAliveTimer: NodeJS.Timeout | null = null;
     private connectionTimeoutTimer: NodeJS.Timeout | null = null;
     private sessionSetupTimer: NodeJS.Timeout | null = null;
-    private isSessionReady = false;     // set on inbound session.created
+    private isSessionReady = false;     // set when a transcription session is ready
 
     // Audio batching state
     private pcmAccumulator: Int16Array[] = [];
@@ -407,6 +407,7 @@ export class OpenAIStreamingSTT extends EventEmitter {
                 this._handleWsClose(1006, Buffer.from('Connection Timeout'));
             }
         }, 10_000);
+        this.connectionTimeoutTimer.unref?.();
 
         this.ws.on('open', () => {
             if (this.connectionTimeoutTimer) {
@@ -417,7 +418,8 @@ export class OpenAIStreamingSTT extends EventEmitter {
             this.isConnecting      = false;
             this.reconnectAttempts = 0;
 
-            // Start 5-second timeout waiting for session.created from server
+            // Start 5-second timeout waiting for the server to create/apply a
+            // transcription session.
             this.sessionSetupTimer = setTimeout(() => {
                 console.warn(`[OpenAIStreaming] Server accepted connection but failed to create session within 5s. Forcing disconnect...`);
                 // Force a disconnect to trigger the fallback logic. Mirror the
@@ -432,6 +434,7 @@ export class OpenAIStreamingSTT extends EventEmitter {
                     this._handleWsClose(1008, Buffer.from('Session Setup Timeout'));
                 }
             }, 5_000);
+            this.sessionSetupTimer.unref?.();
 
             // Configure the transcription session
             // 'auto' key → empty string so Whisper/gpt-4o-transcribe auto-detects the language
@@ -443,26 +446,18 @@ export class OpenAIStreamingSTT extends EventEmitter {
             if (lang) transcription.language = lang;
 
             this.ws!.send(JSON.stringify({
-                type: 'session.update',
+                type: 'transcription_session.update',
                 session: {
-                    type: 'transcription',
-                    audio: {
-                        input: {
-                            format: {
-                                type: 'audio/pcm',
-                                rate: WS_SAMPLE_RATE,
-                            },
-                            transcription,
-                            noise_reduction: { type: 'near_field' },
-                            turn_detection: {
-                                type:                'server_vad',
-                                threshold:           0.5,
-                                prefix_padding_ms:   300,
-                                // 1000ms reduces micro-turns that fragment one sentence into
-                                // many word-sized completed events (overlay queue rows).
-                                silence_duration_ms: 1000,
-                            },
-                        },
+                    input_audio_format: 'pcm16',
+                    input_audio_transcription: transcription,
+                    input_audio_noise_reduction: { type: 'near_field' },
+                    turn_detection: {
+                        type:                'server_vad',
+                        threshold:           0.5,
+                        prefix_padding_ms:   300,
+                        // 1000ms reduces micro-turns that fragment one sentence into
+                        // many word-sized completed events (overlay queue rows).
+                        silence_duration_ms: 1000,
                     },
                 },
             }));
@@ -540,6 +535,19 @@ export class OpenAIStreamingSTT extends EventEmitter {
         }
     }
 
+    private _markSessionReady(): void {
+        if (this.sessionSetupTimer) {
+            clearTimeout(this.sessionSetupTimer);
+            this.sessionSetupTimer = null;
+        }
+        if (this.isSessionReady) return;
+        console.log('[OpenAIStreaming] Transcription session ready — flushing ring buffer');
+        this.isSessionReady = true;
+        this.wsFailures     = 0;
+        this._startKeepAlive();
+        this._flushRingBuffer();
+    }
+
     private _handleWsMessage(msg: Record<string, any>): void {
         // Late-arrival guard. The ws library can deliver a buffered server frame
         // (e.g. session.created) after we have called stop() but
@@ -549,16 +557,18 @@ export class OpenAIStreamingSTT extends EventEmitter {
         if (!this.isActive) return;
         switch (msg.type) {
             case 'session.created':
-            case 'transcription_session.created':
-                if (this.sessionSetupTimer) {
-                    clearTimeout(this.sessionSetupTimer);
-                    this.sessionSetupTimer = null;
+                // Realtime conversation sessions and transcription sessions share
+                // the `session.created` event name in the current API shape. Only
+                // treat it as ready when the payload confirms transcription.
+                if (msg.session?.type !== 'transcription') {
+                    console.warn('[OpenAIStreaming] Ignoring non-transcription session.created event');
+                    break;
                 }
-                console.log('[OpenAIStreaming] Session created — flushing ring buffer');
-                this.isSessionReady = true;
-                this.wsFailures     = 0; // Reset failures on successful session
-                this._startKeepAlive();
-                this._flushRingBuffer();
+                this._markSessionReady();
+                break;
+
+            case 'transcription_session.created':
+                this._markSessionReady();
                 break;
 
             case 'conversation.item.input_audio_transcription.delta': {
@@ -611,11 +621,17 @@ export class OpenAIStreamingSTT extends EventEmitter {
                 break;
             }
 
-            // Server's ACK of our session.update. Useful for confirming the server
-            // applied our requested config — log only, no behavior change required.
+            // Server's ACK of our session.update. If this is a transcription
+            // session, the server has accepted the config and audio can flow.
             case 'session.updated':
+                console.log('[OpenAIStreaming] Session config applied by server');
+                if (msg.session?.type === 'transcription') {
+                    this._markSessionReady();
+                }
+                break;
             case 'transcription_session.updated':
                 console.log('[OpenAIStreaming] Session config applied by server');
+                this._markSessionReady();
                 break;
 
             // VAD events emitted by the server (informational — we don't need to act on them)
@@ -645,7 +661,7 @@ export class OpenAIStreamingSTT extends EventEmitter {
                 // Defensive scrub: if the server ever echoes back the Authorization
                 // header (or any 'Bearer sk-…' string) inside an error body, do not
                 // log or propagate the secret. Mirrors the STT key scrubbing posture
-                // from the May 24 telemetry change.
+                // from the May 24 log-scrubbing change.
                 const errMsg = OpenAIStreamingSTT._scrubBearerTokens(rawErrMsg);
                 console.error(`[OpenAIStreaming] Server error: ${errMsg}`);
                 this.emit('error', new Error(errMsg));
@@ -787,6 +803,7 @@ export class OpenAIStreamingSTT extends EventEmitter {
                 this._connectWs();
             }
         }, delay);
+        this.reconnectTimer.unref?.();
     }
 
     // ─── Keep-alive ───────────────────────────────────────────────────────────
@@ -817,6 +834,7 @@ export class OpenAIStreamingSTT extends EventEmitter {
                 } catch { /* ignore */ }
             }
         }, KEEPALIVE_INTERVAL_MS);
+        this.keepAliveTimer.unref?.();
     }
 
     private _clearKeepAlive(): void {
@@ -865,8 +883,8 @@ export class OpenAIStreamingSTT extends EventEmitter {
 
         if (evictedBytesThisCall > 0) {
             this.ringEvictedBytes += evictedBytesThisCall;
-            // Log + emit a non-fatal warning once per session so upstream telemetry
-            // can surface that leading speech was dropped while waiting for the WS
+            // Log + emit a non-fatal warning once per session so upstream status
+            // handling can surface that leading speech was dropped while waiting for the WS
             // handshake. After the first hit we accumulate silently to avoid log spam.
             if (!this.ringEvictedThisSession) {
                 this.ringEvictedThisSession = true;
@@ -926,6 +944,7 @@ export class OpenAIStreamingSTT extends EventEmitter {
         this.restSafetyTimer = setInterval(() => {
             this._restFlushAndUpload();
         }, REST_SAFETY_NET_MS);
+        this.restSafetyTimer.unref?.();
     }
 
     private _stopRestTimer(): void {

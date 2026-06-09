@@ -5,23 +5,22 @@
 // Replaces the legacy OCR/vision-mixed routing inside ScreenUnderstandingService.
 // This module tries every CONFIGURED vision-capable provider in a safe, low-latency
 // order, with hard per-provider timeouts, scope/privacy enforcement, and redacted
-// telemetry. The first provider that returns non-empty output wins.
+// local events. The first provider that returns non-empty output wins.
 //
 // Provider order (vision_first / vision_only):
-//   1. Natively API (if configured)
-//   2. OpenAI vision (if configured)
-//   3. Gemini Flash vision (if configured)
-//   4. Claude vision (if configured)
-//   5. Gemini Pro vision (if configured)
-//   6. Groq Llama-4-Scout vision (if configured)
-//   7. Ollama local vision (if configured AND the active Ollama model is vision-capable)
-//   8. Codex CLI vision (if enabled AND CLI supports vision)
-//   9. Custom cURL provider (only if multimodal=true AND screenshots scope enabled)
+//   1. OpenAI vision (if configured)
+//   2. Gemini Flash vision (if configured)
+//   3. Claude vision (if configured)
+//   4. Gemini Pro vision (if configured)
+//   5. Groq Llama-4-Scout vision (if configured)
+//   6. Ollama local vision (if configured AND the active Ollama model is vision-capable)
+//   7. Codex CLI vision (if enabled AND CLI supports vision)
+//   8. Custom cURL provider (only if multimodal=true AND screenshots scope enabled)
 //
 // Provider order (private_vision): only steps 7–9, and step 9 only if the custom
 // provider is flagged local-only.
 //
-// Telemetry redaction:
+// Event redaction:
 //   - We never log image paths, base64 payloads, or full prompts.
 //   - We log provider name, model id, ok/skipped/error code, duration.
 //   - Errors are classified into safe buckets (timeout, rate_limited, no_vision,
@@ -82,9 +81,9 @@ export interface VisionFallbackResult {
 // decoupled from LLMHelper — callers inject this configuration so tests can
 // substitute fake providers without bringing up the whole LLM stack.
 export interface VisionProviderConfig {
-  id: string;                                     // unique provider id, used in telemetry
-  displayName: string;                            // e.g. "Natively API"
-  modelId?: string;                               // resolved model id for telemetry
+  id: string;                                     // unique provider id, used in local events
+  displayName: string;                            // e.g. "Gemini Flash"
+  modelId?: string;                               // resolved model id for local events
   isLocal: boolean;                               // true for ollama / codex local / approved-local-custom
   isConfigured: boolean;                          // API key / runtime available
   supportsVision: boolean;                        // selected model is vision-capable
@@ -117,10 +116,10 @@ export interface RunFallbackParams {
   optimizationProfile?: 'fast' | 'balanced' | 'technical' | 'best';
   perProviderTimeoutMs?: number;                  // default 12_000
   totalDeadlineMs?: number;                       // optional ceiling across all attempts
-  telemetry?: (event: VisionTelemetryEvent) => void;
+  onEvent?: (event: VisionFallbackEvent) => void;
 }
 
-export type VisionTelemetryEvent =
+export type VisionFallbackEvent =
   | { type: 'vision_attempt'; provider: string; model?: string }
   | { type: 'vision_success'; provider: string; model?: string; durationMs: number }
   | { type: 'vision_fallback'; from: string; to: string }
@@ -185,7 +184,7 @@ export async function runVisionFallback(params: RunFallbackParams): Promise<Visi
         skipReason: 'not_configured',
         durationMs: 0,
       });
-      params.telemetry?.({ type: 'vision_skipped', provider: provider.id, reason: 'not_configured' });
+      params.onEvent?.({ type: 'vision_skipped', provider: provider.id, reason: 'not_configured' });
       continue;
     }
 
@@ -199,7 +198,7 @@ export async function runVisionFallback(params: RunFallbackParams): Promise<Visi
         skipReason: 'no_vision',
         durationMs: 0,
       });
-      params.telemetry?.({ type: 'vision_skipped', provider: provider.id, reason: 'no_vision' });
+      params.onEvent?.({ type: 'vision_skipped', provider: provider.id, reason: 'no_vision' });
       continue;
     }
 
@@ -213,7 +212,7 @@ export async function runVisionFallback(params: RunFallbackParams): Promise<Visi
         skipReason: 'scope_blocked',
         durationMs: 0,
       });
-      params.telemetry?.({ type: 'vision_skipped', provider: provider.id, reason: 'scope_blocked' });
+      params.onEvent?.({ type: 'vision_skipped', provider: provider.id, reason: 'scope_blocked' });
       sawScopeBlocked = true;
       continue;
     }
@@ -228,7 +227,7 @@ export async function runVisionFallback(params: RunFallbackParams): Promise<Visi
         skipReason: 'privacy_blocked',
         durationMs: 0,
       });
-      params.telemetry?.({ type: 'vision_skipped', provider: provider.id, reason: 'privacy_blocked' });
+      params.onEvent?.({ type: 'vision_skipped', provider: provider.id, reason: 'privacy_blocked' });
       sawPrivacyBlocked = true;
       continue;
     }
@@ -242,7 +241,7 @@ export async function runVisionFallback(params: RunFallbackParams): Promise<Visi
         errorClass: 'timeout',
         durationMs: 0,
       });
-      params.telemetry?.({ type: 'vision_failed', provider: provider.id, errorClass: 'timeout', durationMs: 0 });
+      params.onEvent?.({ type: 'vision_failed', provider: provider.id, errorClass: 'timeout', durationMs: 0 });
       break;
     }
 
@@ -262,13 +261,13 @@ export async function runVisionFallback(params: RunFallbackParams): Promise<Visi
         errorClass: 'invalid_payload',
         durationMs: 0,
       });
-      params.telemetry?.({ type: 'vision_failed', provider: provider.id, errorClass: 'invalid_payload', durationMs: 0 });
+      params.onEvent?.({ type: 'vision_failed', provider: provider.id, errorClass: 'invalid_payload', durationMs: 0 });
       continue;
     }
 
     // 7. invoke with timeout
     sawAtLeastOneAttempt = true;
-    params.telemetry?.({ type: 'vision_attempt', provider: provider.id, model: provider.modelId });
+    params.onEvent?.({ type: 'vision_attempt', provider: provider.id, model: provider.modelId });
 
     const providerStarted = Date.now();
     const controller = new AbortController();
@@ -292,7 +291,7 @@ export async function runVisionFallback(params: RunFallbackParams): Promise<Visi
           ok: true,
           durationMs,
         });
-        params.telemetry?.({ type: 'vision_success', provider: provider.id, model: provider.modelId, durationMs });
+        params.onEvent?.({ type: 'vision_success', provider: provider.id, model: provider.modelId, durationMs });
         return {
           ok: true,
           providerUsed: provider.id,
@@ -311,10 +310,10 @@ export async function runVisionFallback(params: RunFallbackParams): Promise<Visi
         errorClass: 'provider_error',
         durationMs,
       });
-      params.telemetry?.({ type: 'vision_failed', provider: provider.id, errorClass: 'provider_error', durationMs });
+      params.onEvent?.({ type: 'vision_failed', provider: provider.id, errorClass: 'provider_error', durationMs });
       if (i < params.providers.length - 1) {
         const next = params.providers[i + 1];
-        params.telemetry?.({ type: 'vision_fallback', from: provider.id, to: next.id });
+        params.onEvent?.({ type: 'vision_fallback', from: provider.id, to: next.id });
       }
     } catch (err: any) {
       clearTimeout(timer);
@@ -327,10 +326,10 @@ export async function runVisionFallback(params: RunFallbackParams): Promise<Visi
         errorClass,
         durationMs,
       });
-      params.telemetry?.({ type: 'vision_failed', provider: provider.id, errorClass, durationMs });
+      params.onEvent?.({ type: 'vision_failed', provider: provider.id, errorClass, durationMs });
       if (i < params.providers.length - 1) {
         const next = params.providers[i + 1];
-        params.telemetry?.({ type: 'vision_fallback', from: provider.id, to: next.id });
+        params.onEvent?.({ type: 'vision_fallback', from: provider.id, to: next.id });
       }
     }
   }
@@ -356,7 +355,7 @@ export async function runVisionFallback(params: RunFallbackParams): Promise<Visi
 }
 
 // Map a raw error onto one of our redacted error classes. No message bodies are
-// exposed to telemetry — only the class.
+// exposed to local events — only the class.
 function classifyError(err: any, aborted: boolean): VisionErrorClass {
   if (aborted) return 'timeout';
   const msg = String(err?.message || err || '').toLowerCase();

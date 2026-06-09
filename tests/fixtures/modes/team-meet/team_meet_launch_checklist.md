@@ -2,7 +2,7 @@
 
 Sarah owns the launch checklist and must deliver it by Friday.
 
-- [ ] Final telemetry dashboards (sarah, Wed)
+- [ ] Final launch dashboards (sarah, Wed)
 - [ ] Marketing site copy review (growth, Wed)
 - [ ] Customer notice email (sarah, Thu)
 - [ ] Feature-flag flip and rollback drill (platform, Thu)

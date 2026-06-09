@@ -876,7 +876,7 @@ export function ProfileIntelligenceSettings({ onClose }: { onClose: () => void }
                                                     </div>
                                                     <div className="flex-1 min-w-0">
                                                         <div className="flex items-center gap-2">
-                                                            <h4 className="text-sm font-bold text-text-primary">Custom Context</h4>
+                                                            <h4 className="text-sm font-bold text-text-primary">Profile Context</h4>
                                                             {customNotesSaved && (
                                                                 <span className="text-[9px] font-bold text-emerald-500 px-1.5 py-0.5 bg-emerald-500/10 rounded-full border border-emerald-500/20 uppercase tracking-wide flex items-center gap-1">
                                                                     <Check size={8} /> Saved
@@ -884,7 +884,7 @@ export function ProfileIntelligenceSettings({ onClose }: { onClose: () => void }
                                                             )}
                                                         </div>
                                                         <p className="text-[11px] text-text-secondary mt-0.5">
-                                                            Add any context the AI should know about you — saved across all sessions.
+                                                            Permanent facts and instructions added directly to every request.
                                                         </p>
                                                     </div>
                                                 </div>

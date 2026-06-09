@@ -31,10 +31,12 @@ const UpdateBanner: React.FC = () => {
     // Tracks whether the user explicitly dismissed the toast — progress events
     // should not override a deliberate dismiss.
     const userDismissedRef = useRef(false);
+    const electronAPI = window.electronAPI;
 
     useEffect(() => {
+        if (!electronAPI?.getCanAutoUpdate) return;
         let cancelled = false;
-        window.electronAPI.getCanAutoUpdate?.()
+        electronAPI.getCanAutoUpdate()
             .then(({ canAutoUpdate }) => { if (!cancelled) setCanAutoUpdate(canAutoUpdate); })
             .catch((err) => {
                 if (cancelled) return;
@@ -42,11 +44,14 @@ const UpdateBanner: React.FC = () => {
                 console.warn('[UpdateBanner] getCanAutoUpdate failed, using manual fallback:', err);
             });
         return () => { cancelled = true; };
-    }, []);
+    }, [electronAPI]);
 
     useEffect(() => {
+        if (!electronAPI?.onUpdateAvailable || !electronAPI?.onDownloadProgress || !electronAPI?.onUpdateDownloaded || !electronAPI?.onUpdateError) {
+            return;
+        }
         // Listen for update available
-        const unsubAvailable = window.electronAPI.onUpdateAvailable((info: UpdateInfo) => {
+        const unsubAvailable = electronAPI.onUpdateAvailable((info: UpdateInfo) => {
             console.log('[UpdateBanner] Update available:', info);
             setUpdateInfo(info);
             setErrorMessage(null);
@@ -61,7 +66,7 @@ const UpdateBanner: React.FC = () => {
         });
 
         // Listen for download progress
-        const unsubProgress = window.electronAPI.onDownloadProgress((progressObj) => {
+        const unsubProgress = electronAPI.onDownloadProgress((progressObj) => {
             // Re-show toast only if user hasn't explicitly dismissed it
             if (!userDismissedRef.current) {
                 setIsVisible(true);
@@ -71,7 +76,7 @@ const UpdateBanner: React.FC = () => {
         });
 
         // Listen for update-downloaded event
-        const unsubDownloaded = window.electronAPI.onUpdateDownloaded((info) => {
+        const unsubDownloaded = electronAPI.onUpdateDownloaded((info) => {
             console.log('[UpdateBanner] Update downloaded:', info);
             setUpdateInfo(info); // Update info again just in case
             if (info.parsedNotes) setParsedNotes(info.parsedNotes);
@@ -89,7 +94,7 @@ const UpdateBanner: React.FC = () => {
         });
 
         // Listen for update errors
-        const unsubError = window.electronAPI.onUpdateError((err: string) => {
+        const unsubError = electronAPI.onUpdateError((err: string) => {
             console.error('[UpdateBanner] Update error:', err);
             setStatus('error');
             setErrorMessage(err);
@@ -101,7 +106,7 @@ const UpdateBanner: React.FC = () => {
             unsubDownloaded();
             unsubError();
         };
-    }, []);
+    }, [electronAPI]);
 
     // Demo/Test mode: Press Cmd+I to trigger backend test-fetch or Cmd+J for UI mock
     useEffect(() => {
@@ -111,7 +116,7 @@ const UpdateBanner: React.FC = () => {
             if (e.metaKey && !e.shiftKey && e.key.toLowerCase() === 'i') {
                 e.preventDefault();
                 console.log("[UpdateBanner] Cmd+I pressed: Triggering Test Release Fetch...");
-                window.electronAPI.testReleaseFetch().catch(console.error);
+                electronAPI?.testReleaseFetch?.().catch(console.error);
             }
             
             if (e.metaKey && !e.shiftKey && e.key.toLowerCase() === 'j') {
@@ -125,15 +130,16 @@ const UpdateBanner: React.FC = () => {
         };
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
-    }, []);
+    }, [electronAPI]);
 
     const handleInstall = async () => {
+        if (!electronAPI) return;
         // Signed macOS builds (and all packaged Windows/Linux builds) can download
         // and install in place, so always use the real in-app flow: download via
         // IPC, then "Restart & Install" once ready.
         if (canAutoUpdate) {
             setStatus('downloading');
-            window.electronAPI.downloadUpdate();
+            electronAPI.downloadUpdate();
             return;
         }
 
@@ -141,31 +147,31 @@ const UpdateBanner: React.FC = () => {
         // the user to the signed DMG on GitHub and show the manual-install steps.
         // Guard: if version is absent, fall back to triggering download (which will
         // surface an error) rather than sending user to a broken GitHub URL.
-        if (window.electronAPI.platform === 'darwin') {
+        if (electronAPI.platform === 'darwin') {
             if (!updateInfo?.version) {
                 console.warn('[UpdateBanner] No version in updateInfo — opening latest GitHub release instead of in-app download');
-                window.electronAPI.openExternal(LATEST_RELEASE_URL);
+                electronAPI.openExternal(LATEST_RELEASE_URL);
                 setStatus('instructions');
                 return;
             }
             try {
-                const arch = await window.electronAPI.getArch();
+                const arch = await electronAPI.getArch();
                 const isArm = arch === 'arm64';
                 const dmgSuffix = isArm ? 'arm64' : 'x64';
                 setInstructionsArch(dmgSuffix);
                 const version = updateInfo.version.replace('v', '');
                 const url = `https://github.com/NeuroMarshal/natively-cluely-ai-assistant/releases/download/v${version}/Natively-${version}-${dmgSuffix}.dmg`;
-                window.electronAPI.openExternal(url);
+                electronAPI.openExternal(url);
                 setStatus('instructions');
             } catch (err) {
                 console.error("Failed to get arch", err);
-                window.electronAPI.openExternal(LATEST_RELEASE_URL);
+                electronAPI.openExternal(LATEST_RELEASE_URL);
                 setStatus('instructions');
             }
         } else {
             setStatus('downloading');
             // Trigger download via IPC
-            window.electronAPI.downloadUpdate();
+            electronAPI.downloadUpdate();
         }
     };
 

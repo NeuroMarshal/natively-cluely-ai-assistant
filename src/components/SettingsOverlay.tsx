@@ -8,7 +8,6 @@ import {
     Sparkles, Pencil, Briefcase, Building2, Search, MapPin, CheckCircle, HelpCircle, Zap, SlidersHorizontal, PointerOff,
     Star, AlertCircle, Gift, Smartphone, Cpu, Shield
 } from 'lucide-react';
-import { analytics } from '../lib/analytics/analytics.service';
 import { AboutSection } from './AboutSection';
 import { HelpSettings } from './settings/HelpSettings';
 import { AIProvidersSettings } from './settings/AIProvidersSettings';
@@ -16,6 +15,7 @@ import { PhoneMirrorSettings } from './settings/PhoneMirrorSettings';
 import { SkillsSettings } from './settings/SkillsSettings';
 import { LocalWhisperModelPanel } from './LocalWhisperModelPanel';
 import { LocalEmbeddingModelPanel } from './LocalEmbeddingModelPanel';
+import { LocalAiRuntimePanel } from './LocalAiRuntimePanel';
 import { NativelyLogoMark } from './NativelyLogoMark';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useShortcuts } from '../hooks/useShortcuts';
@@ -669,7 +669,9 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                     currentLangKey = match ? match[0] : 'english-us';
 
                     // Save the auto-detected default
-                    if (window.electronAPI?.setRecognitionLanguage) {
+                    if (window.electronAPI?.setSttLanguage) {
+                        window.electronAPI.setSttLanguage(currentLangKey);
+                    } else if (window.electronAPI?.setRecognitionLanguage) {
                         window.electronAPI.setRecognitionLanguage(currentLangKey);
                     }
                 }
@@ -709,7 +711,9 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
         if (availableLanguages[key]) {
             setSelectedSttGroup(availableLanguages[key].group);
         }
-        if (window.electronAPI?.setRecognitionLanguage) {
+        if (window.electronAPI?.setSttLanguage) {
+            await window.electronAPI.setSttLanguage(key);
+        } else if (window.electronAPI?.setRecognitionLanguage) {
             await window.electronAPI.setRecognitionLanguage(key);
         }
     };
@@ -832,7 +836,7 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
     } | null>(null);
 
     // STT Provider settings
-    const [sttProvider, setSttProvider] = useState<'none' | 'google' | 'groq' | 'openai' | 'deepgram' | 'elevenlabs' | 'azure' | 'ibmwatson' | 'soniox' | 'natively' | 'local-whisper'>('none');
+    const [sttProvider, setSttProvider] = useState<'none' | 'google' | 'groq' | 'openai' | 'deepgram' | 'elevenlabs' | 'azure' | 'ibmwatson' | 'soniox' | 'local-whisper'>('none');
     const [groqSttModel, setGroqSttModel] = useState('whisper-large-v3-turbo');
     const [sttGroqKey, setSttGroqKey] = useState('');
     const [sttOpenaiKey, setSttOpenaiKey] = useState('');
@@ -932,7 +936,7 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
         return () => unsubscribe();
     }, []); // mount-once: isOpen is checked inside the callback
 
-    const handleSttProviderChange = async (provider: 'none' | 'google' | 'groq' | 'openai' | 'deepgram' | 'elevenlabs' | 'azure' | 'ibmwatson' | 'soniox' | 'natively' | 'local-whisper') => {
+    const handleSttProviderChange = async (provider: 'none' | 'google' | 'groq' | 'openai' | 'deepgram' | 'elevenlabs' | 'azure' | 'ibmwatson' | 'soniox' | 'local-whisper') => {
         setSttProvider(provider);
         setIsSttDropdownOpen(false);
         setSttTestStatus('idle');
@@ -1071,7 +1075,7 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
     };
 
     const handleTestSttConnection = async () => {
-        if (sttProvider === 'none' || sttProvider === 'google' || sttProvider === 'natively' || sttProvider === 'local-whisper') return;
+        if (sttProvider === 'none' || sttProvider === 'google' || sttProvider === 'local-whisper') return;
         const keyMap: Record<string, string> = {
             groq: sttGroqKey, openai: sttOpenaiKey, deepgram: sttDeepgramKey,
             elevenlabs: sttElevenLabsKey, azure: sttAzureKey, ibmwatson: sttIbmKey,
@@ -1407,6 +1411,7 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                         <div className="flex-1 bg-bg-main overflow-y-auto p-8 relative">
                             {activeTab === 'general' && (
                                 <div className="space-y-6 animated fadeIn">
+                                    <LocalAiRuntimePanel />
                                     <div className="space-y-3.5">
                                         {/* UndetectableToggle */}
                                         <div className={`${isLight ? 'bg-bg-card' : 'bg-bg-item-surface'} rounded-xl p-5 border border-border-subtle flex items-center justify-between transition-all ${isUndetectable ? 'shadow-lg shadow-blue-500/10' : ''}`}>
@@ -1442,8 +1447,6 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                                                     const newState = !isUndetectable;
                                                     setIsUndetectable(newState);
                                                     window.electronAPI?.setUndetectable(newState);
-                                                    // Analytics: Undetectable Mode Toggle
-                                                    analytics.trackModeSelected(newState ? 'undetectable' : 'overlay');
                                                 }}
                                                 className={`w-11 h-6 rounded-full relative transition-colors ${isUndetectable ? 'bg-accent-primary' : 'bg-bg-toggle-switch border border-border-muted'}`}
                                             >
@@ -2021,8 +2024,6 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                                                         setDisguiseMode(option.id);
                                                         // @ts-ignore
                                                         window.electronAPI?.setDisguise(option.id);
-                                                        // Analytics
-                                                        analytics.trackModeSelected(`disguise_${option.id}`);
                                                     }}
                                                     className={`p-3 rounded-lg border text-left flex items-center gap-3 transition-all ${disguiseMode === option.id
                                                         ? 'bg-accent-primary border-accent-primary text-white shadow-lg shadow-blue-500/20'
@@ -2299,7 +2300,7 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                                             )}
 
                                             {/* API Key Input (non-Google providers) */}
-                                            {sttProvider !== 'google' && sttProvider !== 'local-whisper' && sttProvider !== 'natively' && sttProvider !== 'none' && (
+                                            {sttProvider !== 'google' && sttProvider !== 'local-whisper' && sttProvider !== 'none' && (
                                                 <div className="bg-bg-card rounded-xl border border-border-subtle p-4 space-y-3">
                                                     <label className="text-xs font-medium text-text-secondary block">
                                                         {sttProvider === 'groq' ? 'Groq' : sttProvider === 'openai' ? 'OpenAI STT' : sttProvider === 'elevenlabs' ? 'ElevenLabs' : sttProvider === 'azure' ? 'Azure' : sttProvider === 'ibmwatson' ? 'IBM Watson' : sttProvider === 'soniox' ? 'Soniox' : 'Deepgram'} API Key

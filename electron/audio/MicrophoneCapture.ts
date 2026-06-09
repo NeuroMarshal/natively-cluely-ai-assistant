@@ -124,10 +124,6 @@ export class MicrophoneCapture extends EventEmitter {
                     // deferred native stop() means late chunks may arrive on the JS
                     // side; drop them so STT.finalize() sees a clean audio-end.
                     if (!this.isRecording) return;
-                    // Debug: log occasionally
-                    if (Math.random() < 0.05) {
-                        console.log(`[MicrophoneCapture] Emitting chunk: ${chunk.length} bytes to JS`);
-                    }
                     // PERF: napi-rs Buffer is already owned. Removed redundant Buffer.from copy
                     // (matches SystemAudioCapture). Saves ~95KB/sec of allocation churn.
                     this.emit('data', chunk);
@@ -221,7 +217,7 @@ export class MicrophoneCapture extends EventEmitter {
                 this.monitor = new RustMicCapture(this.deviceId);
             } catch (e) {
                 // Emit a structured event so observers (main.ts handles
-                // 'error', AudioRecovery, telemetry) see the failure
+                // 'error' and AudioRecovery) see the failure
                 // instead of it being buried in console output. The
                 // defensive branch in start() (line ~64) will still retry
                 // construction synchronously — at that point the failure

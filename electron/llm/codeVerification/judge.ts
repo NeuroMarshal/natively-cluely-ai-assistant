@@ -61,7 +61,7 @@ const asFiniteNumber = (v: unknown): number | null => {
   return null;
 };
 
-/** Short, redaction-safe rendering of a value for a correction note / telemetry. */
+/** Short, redaction-safe rendering of a value for a correction note. */
 export const renderValue = (v: unknown, max = 80): string => {
   let s: string;
   try { s = JSON.stringify(v); } catch { s = String(v); }

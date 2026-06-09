@@ -59,7 +59,7 @@ export interface SessionFollowupResult extends ResolvedFollowUp {
   clarificationText?: string;
   /** The entity recalled from long-range memory (if any). */
   recalledEntity?: string;
-  /** Age of the recalled entity (seconds) — for telemetry / scoring by context-age. */
+  /** Age of the recalled entity (seconds) — for scoring by context-age. */
   recalledAgeSeconds?: number;
   /** Where the resolution came from. */
   resolvedVia: 'session_memory' | 'prior_turn' | 'clarification' | 'none';

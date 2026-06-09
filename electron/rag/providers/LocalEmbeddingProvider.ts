@@ -11,6 +11,10 @@ import {
   isEmbeddingModelCached,
   type EmbeddingModelInfo,
 } from '../embeddingModelManager';
+import {
+  readRuntimePreference,
+  resolveLocalEmbeddingInferenceConfig,
+} from '../../audio/whisper/inferenceConfig';
 
 /**
  * On-device embedding provider backed by a transformers.js feature-extraction
@@ -30,6 +34,7 @@ export class LocalEmbeddingProvider implements IEmbeddingProvider {
   private pipe: any = null;
   private loadingPromise: Promise<void> | null = null; // prevents concurrent init races
   private bundledModelsRoot: string;
+  private activeDevice: 'cpu' | 'webgpu' = 'cpu';
 
   constructor(modelId: string = DEFAULT_EMBEDDING_MODEL_ID) {
     // Resolve to the requested model when its weights exist; otherwise fall back
@@ -78,9 +83,27 @@ export class LocalEmbeddingProvider implements IEmbeddingProvider {
       env.allowRemoteModels = false;
       env.localModelPath = this.bundled ? this.bundledModelsRoot : getEmbeddingModelsDir();
 
-      this.pipe = await pipeline('feature-extraction', this.model, {
-        local_files_only: true,
-      });
+      const runtime = readRuntimePreference();
+      const inference = resolveLocalEmbeddingInferenceConfig();
+      const load = (device: string, sessionOptions?: Record<string, unknown>) =>
+        pipeline('feature-extraction', this.model, {
+          local_files_only: true,
+          device,
+          session_options: sessionOptions,
+        });
+
+      try {
+        this.pipe = await load(inference.device, inference.sessionOptions);
+        this.activeDevice = inference.backend;
+      } catch (error) {
+        if (runtime !== 'auto' || inference.backend === 'cpu') throw error;
+        console.warn(
+          `[LocalEmbeddingProvider] WebGPU load failed for ${this.model}; retrying on CPU:`,
+          (error as Error)?.message || error,
+        );
+        this.pipe = await load('cpu');
+        this.activeDevice = 'cpu';
+      }
     })();
 
     try {
@@ -116,5 +139,24 @@ export class LocalEmbeddingProvider implements IEmbeddingProvider {
       result.push(Array.from(output.data.slice(i * this.dimensions, (i + 1) * this.dimensions)));
     }
     return result;
+  }
+
+  getRuntimeInfo(): { requested: 'auto' | 'gpu' | 'cpu'; activeDevice: string; model: string } {
+    return {
+      requested: readRuntimePreference(),
+      activeDevice: this.activeDevice,
+      model: this.model,
+    };
+  }
+
+  async dispose(): Promise<void> {
+    const current = this.pipe;
+    this.pipe = null;
+    this.loadingPromise = null;
+    try {
+      await current?.dispose?.();
+    } catch {
+      // Session teardown is best-effort.
+    }
   }
 }

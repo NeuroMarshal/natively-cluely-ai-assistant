@@ -83,7 +83,7 @@ export interface RunResult {
   actual?: unknown;
   /** Error/compile/timeout detail for `error` (redaction-safe, truncated). */
   error?: string;
-  /** Wall-clock ms for this run (for telemetry). */
+  /** Wall-clock ms for this run. */
   ms: number;
 }
 

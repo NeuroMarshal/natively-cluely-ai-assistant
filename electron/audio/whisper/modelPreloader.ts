@@ -16,13 +16,17 @@
  */
 
 import { Worker } from 'worker_threads';
+import { fork, type ChildProcess } from 'child_process';
 import { buildWorkerInitMessage } from './inferenceConfig';
+import type { WorkerInMessage } from './types';
 import { resolveWhisperWorkerPath } from './workerPathResolver';
 
+type PreloadedWorker = Worker | ChildProcess;
+
 class ModelPreloader {
-    private warmWorker: Worker | null = null;
+    private warmWorker: PreloadedWorker | null = null;
     private warmModelId: string | null = null;
-    private loadingWorker: Worker | null = null;
+    private loadingWorker: PreloadedWorker | null = null;
     private pendingModelId: string | null = null;
     private loading = false;
 
@@ -37,12 +41,12 @@ class ModelPreloader {
 
         // Cancel any in-progress load for a different model
         if (this.loadingWorker) {
-            this.loadingWorker.terminate();
+            this.terminateWorker(this.loadingWorker);
             this.loadingWorker = null;
         }
         // Tear down warm worker for a different model
         if (this.warmWorker) {
-            this.warmWorker.terminate();
+            this.terminateWorker(this.warmWorker);
             this.warmWorker = null;
             this.warmModelId = null;
         }
@@ -50,15 +54,24 @@ class ModelPreloader {
         this.loading = true;
         this.pendingModelId = modelId;
 
-        console.log(`[ModelPreloader] Warming worker for ${modelId}...`);
+        const initMessage = buildWorkerInitMessage(modelId);
+        console.log(`[ModelPreloader] Warming ${initMessage.runtimeBackend} worker for ${modelId}...`);
 
         const workerPath = resolveWhisperWorkerPath();
-        const w = new Worker(workerPath);
+        const w: PreloadedWorker = initMessage.runtimeBackend === 'webgpu'
+            ? fork(workerPath, [], {
+                env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+                serialization: 'advanced',
+                stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
+            })
+            : new Worker(workerPath);
         this.loadingWorker = w;
 
-        w.on('message', (msg: any) => {
+        const onMessage = (msg: any) => {
             if (msg.type === 'ready') {
                 console.log(`[ModelPreloader] Worker warm for ${modelId}`);
+                w.removeListener('message', onMessage);
+                w.removeListener('error', onError);
                 this.warmWorker = w;
                 this.loadingWorker = null;
                 this.warmModelId = modelId;
@@ -66,28 +79,44 @@ class ModelPreloader {
                 this.loading = false;
             } else if (msg.type === 'error') {
                 console.warn(`[ModelPreloader] Worker init failed: ${msg.message}`);
-                w.terminate();
+                this.terminateWorker(w);
                 this.loadingWorker = null;
                 this.pendingModelId = null;
                 this.loading = false;
             }
-        });
+        };
 
-        w.on('error', (err) => {
+        const onError = (err: Error) => {
             console.warn('[ModelPreloader] Worker error:', err.message);
+            this.terminateWorker(w);
             this.loadingWorker = null;
             this.pendingModelId = null;
             this.loading = false;
-        });
+        };
 
-        w.postMessage(buildWorkerInitMessage(modelId));
+        const onExit = () => {
+            if (this.loadingWorker === w) {
+                this.loadingWorker = null;
+                this.pendingModelId = null;
+                this.loading = false;
+            }
+            if (this.warmWorker === w) {
+                this.warmWorker = null;
+                this.warmModelId = null;
+            }
+        };
+
+        w.on('message', onMessage);
+        w.on('error', onError);
+        w.once('exit', onExit);
+        this.postToWorker(w, initMessage);
     }
 
     /**
      * Hand off the warm worker to a caller and clear the cache.
      * Returns null if no warm worker is available for that model ID.
      */
-    takeWarmWorker(modelId: string): Worker | null {
+    takeWarmWorker(modelId: string): PreloadedWorker | null {
         if (this.warmModelId === modelId && this.warmWorker) {
             const w = this.warmWorker;
             this.warmWorker = null;
@@ -103,13 +132,34 @@ class ModelPreloader {
     }
 
     terminate(): void {
-        this.loadingWorker?.terminate();
+        if (this.loadingWorker) this.terminateWorker(this.loadingWorker);
         this.loadingWorker = null;
-        this.warmWorker?.terminate();
+        if (this.warmWorker) this.terminateWorker(this.warmWorker);
         this.warmWorker = null;
         this.warmModelId = null;
         this.pendingModelId = null;
         this.loading = false;
+    }
+
+    private postToWorker(worker: PreloadedWorker, message: WorkerInMessage): void {
+        if (this.isChildProcess(worker)) {
+            worker.send?.(message);
+        } else {
+            worker.postMessage(message);
+        }
+    }
+
+    private terminateWorker(worker: PreloadedWorker): void {
+        if (this.isChildProcess(worker)) {
+            if (!worker.killed) worker.kill();
+        } else {
+            void worker.terminate();
+        }
+    }
+
+    private isChildProcess(worker: PreloadedWorker): worker is ChildProcess {
+        return typeof (worker as ChildProcess).send === 'function'
+            && typeof (worker as Worker).postMessage !== 'function';
     }
 }
 

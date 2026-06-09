@@ -18,6 +18,7 @@ import {
   Zap,
 } from 'lucide-react';
 import {
+  displayRollingTranscript,
   mergeRollingTranscriptFinal,
   mergeRollingTranscriptPartial,
 } from '../../electron/utils/rollingTranscriptState';
@@ -167,7 +168,6 @@ import remarkMath from 'remark-math';
 import { useResolvedTheme } from '../hooks/useResolvedTheme';
 import { genMessageId } from '../utils/messageId';
 import { useShortcuts } from '../hooks/useShortcuts';
-import { analytics, detectProviderType } from '../lib/analytics/analytics.service';
 import type { MeetingInterfaceTheme } from '../lib/meetingInterfaceTheme';
 import {
   getGlassOverlayAppearance,
@@ -596,7 +596,7 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({
     return stored === 'true';
   });
 
-  // Analytics State
+  // Request timing state
   const requestStartTimeRef = useRef<number | null>(null);
 
   // Sync transcript setting
@@ -1323,7 +1323,7 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({
     const inWindowFirstTransition = committed !== null && Date.now() < mainDrivenWidthUntilRef.current;
     const width = inWindowFirstTransition ? committed : Math.round(shellWidth.get());
     const height = contentRef.current.offsetHeight;
-    if (process.env.NODE_ENV === 'development') {
+    if (import.meta.env.DEV) {
       const scrollEl = scrollContainerRef.current;
       console.log('[overlay-resize] reportShellSize', {
         width,
@@ -1366,7 +1366,7 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({
     const availHeight = typeof window !== 'undefined' ? window.screen?.availHeight ?? 0 : 0;
     const chromeHeight = contentEl.offsetHeight - scrollEl.clientHeight;
     const nextCap = verticalScrollCap({ availHeight, chromeHeight });
-    if (process.env.NODE_ENV === 'development') {
+    if (import.meta.env.DEV) {
       console.log('[overlay-resize] measureVerticalCap', {
         availHeight,
         chromeHeight,
@@ -1925,10 +1925,6 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({
       setSttInterviewerError('');
       // Optionally reset connection status if needed, but connection persists
 
-      // Track new conversation/session if applicable?
-      // Actually 'app_opened' is global, 'assistant_started' is overlay.
-      // Maybe 'conversation_started' event?
-      analytics.trackConversationStarted();
     });
     return () => unsubscribe();
   }, []);
@@ -2825,7 +2821,6 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({
   // memo comparator would never match and the bailout would not fire.
   const handleCopy = useCallback((text: string) => {
     navigator.clipboard.writeText(text);
-    analytics.trackCopyAnswer();
     // Optional: Trigger a small toast or state change for visual feedback
   }, []);
 
@@ -2875,7 +2870,6 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({
     // Create AI response placeholder AFTER user message so thinking dots + response
     // appear BELOW the screenshot question card (not above it)
     prepareIntelligenceStreamPlaceholder('what_to_answer');
-    analytics.trackCommandExecuted('what_to_say');
 
     try {
       // Pass imagePath if attached
@@ -2946,7 +2940,6 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({
     setIsExpanded(true);
     setIsProcessing(true);
     prepareIntelligenceStreamPlaceholder(intent);
-    analytics.trackCommandExecuted('follow_up_' + intent);
 
     try {
       await window.electronAPI.generateFollowUp(intent);
@@ -2970,7 +2963,6 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({
     setIsExpanded(true);
     setIsProcessing(true);
     prepareIntelligenceStreamPlaceholder('recap');
-    analytics.trackCommandExecuted('recap');
 
     try {
       await window.electronAPI.generateRecap();
@@ -2994,7 +2986,6 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({
     setIsExpanded(true);
     setIsProcessing(true);
     prepareIntelligenceStreamPlaceholder('follow_up_questions');
-    analytics.trackCommandExecuted('suggest_questions');
 
     try {
       await window.electronAPI.generateFollowUpQuestions();
@@ -3018,7 +3009,6 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({
     setIsExpanded(true);
     setIsProcessing(true);
     prepareIntelligenceStreamPlaceholder('clarify');
-    analytics.trackCommandExecuted('clarify');
 
     try {
       await window.electronAPI.generateClarify();
@@ -3096,7 +3086,6 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({
     setIsExpanded(true);
     setIsProcessing(true);
     prepareIntelligenceStreamPlaceholder('what_to_answer');
-    analytics.trackCommandExecuted('brainstorm');
 
     const currentAttachments = attachedContext;
     if (currentAttachments.length > 0) {
@@ -3171,19 +3160,7 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({
         streamingRenderModeRef.current = 'imperative';
         setIsProcessing(false);
 
-        // Calculate latency if we have a start time
-        let latency = 0;
-        if (requestStartTimeRef.current) {
-          latency = Date.now() - requestStartTimeRef.current;
-          requestStartTimeRef.current = null;
-        }
-
-        // Track Usage
-        analytics.trackModelUsed({
-          model_name: currentModel,
-          provider_type: detectProviderType(currentModel),
-          latency_ms: latency,
-        });
+        if (requestStartTimeRef.current) requestStartTimeRef.current = null;
 
         setMessages((prev) => {
           const idx =
@@ -5205,7 +5182,7 @@ Provide only the answer, nothing else.`;
                   also avoids an empty bar / duplicated status text). */}
               {showTranscript && rollingTranscript ? (
                 <RollingTranscript
-                  text={rollingTranscript}
+                  text={displayRollingTranscript(rollingTranscript)}
                   isActive={isInterviewerSpeaking}
                   surfaceStyle={appearance.transcriptStyle}
                   interviewerChannel={{

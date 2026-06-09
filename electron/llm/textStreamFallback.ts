@@ -72,7 +72,7 @@ export const orderTextByHealth = orderVisionByHealth;
 /**
  * Run the text-provider fallback chain. Thin wrapper over the shared engine so
  * callers read as "text" while reusing the proven orchestration. `onWinner` (in
- * hooks) is not part of the engine; callers that want race-winner telemetry
+ * hooks) is not part of the engine; callers that want race-winner debug data
  * should wrap each provider's `open` to record TTFT, or read the health map.
  */
 export async function* runStreamingTextFallback(

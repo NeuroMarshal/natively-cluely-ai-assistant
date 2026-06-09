@@ -21,7 +21,7 @@ import { DynamicActionEngine } from './services/dynamic-actions/DynamicActionEng
 import { DynamicAction } from './services/dynamic-actions/DynamicAction';
 import { ScreenContext } from './services/screen/ScreenContextService';
 import { buildPreparedTranscriptContext as assemblePreparedTranscriptContext } from './utils/preparedTranscriptContext';
-import { PiLatencyTrace } from './services/telemetry/PiLatencyTracer';
+import { RequestTrace } from './utils/RequestTrace';
 
 // Mode types
 export type IntelligenceMode = 'idle' | 'assist' | 'what_to_say' | 'follow_up' | 'recap' | 'clarify' | 'manual' | 'follow_up_questions' | 'code_hint' | 'brainstorm';
@@ -163,8 +163,8 @@ export class IntelligenceEngine extends EventEmitter {
     private currentDynamicActionTemplateType: string | null = null;
     // Latency trace for the most recent live request (manual/WTA). Exposed via
     // getLastTraceSnapshot() so evals/debug-metadata can read stage timings
-    // without parsing the telemetry JSONL.
-    private lastTrace: PiLatencyTrace | null = null;
+    // without any file sink or external reporting.
+    private lastTrace: RequestTrace | null = null;
 
     private static isNonAnswerSentinel(answer: string): boolean {
         const normalized = answer.trim().toLowerCase().replace(/[.!?]+$/g, '');
@@ -614,7 +614,7 @@ export class IntelligenceEngine extends EventEmitter {
 
         // ── Live-path latency trace (click → first useful token → render) ──
         // Records metadata-only milestones; never carries raw transcript/resume.
-        const trace = new PiLatencyTrace({
+        const trace = new RequestTrace({
             source: question ? 'manual' : 'what_to_answer',
             sessionId: this.currentSessionId ?? undefined,
         });
@@ -919,7 +919,7 @@ export class IntelligenceEngine extends EventEmitter {
 
             // Deterministic context route (Phase 6): turn the plan's required/
             // forbidden layers into an explicit, auditable include/exclude route
-            // and surface it in telemetry. summarizeContextRoute returns LAYER
+            // and surface it in debug metadata. summarizeContextRoute returns LAYER
             // NAMES + counts only — never raw content — so this is PII-safe. The
             // route is the single observable record of which context layers this
             // answer is allowed to see (isLayerAllowed enforces the same rules at
@@ -1322,13 +1322,13 @@ export class IntelligenceEngine extends EventEmitter {
      *   - 'code_verified' when the shown code passed (renderer shows a ✓ badge), or
      *   - 'code_correction' when it failed and a re-verified fix was produced
      *     (renderer posts a new corrected message).
-     * Telemetry milestones ride the existing PiLatencyTrace (metadata only).
+     * Verification milestones ride the existing in-memory RequestTrace.
      */
     private async maybeVerifyCoding(
         shownAnswer: string,
         question: string,
         screenText: string | undefined,
-        trace: PiLatencyTrace,
+        trace: RequestTrace,
         generationId: number,
     ): Promise<void> {
         // Supersession guard: if the user fired a newer generation while this
@@ -1357,7 +1357,7 @@ export class IntelligenceEngine extends EventEmitter {
                     });
                     return fixed;
                 },
-                onEvent: (name, props) => { try { trace.mark(name as any, props); } catch { /* telemetry never breaks verify */ } },
+                onEvent: (name, props) => { try { trace.mark(name as any, props); } catch { /* debug trace never breaks verify */ } },
             });
 
             if (superseded()) return; // a newer answer took over — don't badge/correct the stale one

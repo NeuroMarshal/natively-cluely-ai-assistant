@@ -31,14 +31,25 @@ export interface AppSettings {
     localWhisperPerChannelEnabled?: boolean;
     localWhisperModelMic?: string;
     localWhisperModelSystem?: string;
+    // Execution runtime for local STT and embeddings.
+    //   'auto' — native WebGPU first, then whole-model CPU fallback.
+    //   'gpu'  — require native WebGPU.
+    //   'cpu'  — force CPU only.
+    sttRuntime?: 'auto' | 'gpu' | 'cpu';
+    // Shared runtime for all local inference (STT and embeddings). Legacy STT
+    // keys remain readable for migration from builds before this setting moved
+    // to General.
+    localAiRuntime?: 'auto' | 'gpu' | 'cpu';
     // Selected on-device embedding model id (electron/rag/embeddingModelManager
     // catalog). Powers semantic search over the local knowledge DB. Downloaded
     // directly via transformers.js — never pulled through Ollama. Defaults to the
     // bundled MiniLM until the user installs the multilingual default.
     localEmbeddingModel?: string;
-    // Phase 6 — TelemetryService toggle. Defaults to true (local-only JSONL).
-    // When false, no telemetry is written to disk and no sinks fire.
-    telemetryEnabled?: boolean;
+    // Direct Google Calendar OAuth client for the local desktop loopback flow.
+    // These replace the removed hosted calendar proxy. Desktop client secrets
+    // are not confidential; users can also supply env GOOGLE_CLIENT_ID/SECRET.
+    googleCalendarClientId?: string;
+    googleCalendarClientSecret?: string;
     // Phase 9 — privacy/retention controls. Foundation only. Encryption is
     // documented in docs/engineering/LOCAL_DB_ENCRYPTION_DESIGN.md.
     // 'forever' (default), '7d', '30d', or 'never' (do not store transcripts).
@@ -149,6 +160,7 @@ export class SettingsManager {
                     if (typeof parsed === 'object' && parsed !== null) {
                         this.settings = parsed;
                         this.migrateLegacySettings();
+                        this.removeLegacyLocalRuntimeDeviceSettings();
                         console.log('[SettingsManager] Settings loaded successfully', { keys: Object.keys(this.settings).length });
                     } else {
                         throw new Error('Settings JSON is not a valid object');
@@ -181,6 +193,21 @@ export class SettingsManager {
             this.settings.screenUnderstandingMode = 'vision_first';
             this.saveSettings();
         }
+    }
+
+    private removeLegacyLocalRuntimeDeviceSettings(): void {
+        const settings = this.settings as AppSettings & Record<string, unknown>;
+        let changed = false;
+        for (const key of [
+            ['stt', 'Gpu', 'Device', 'Id'].join(''),
+            ['local', 'Ai', 'Gpu', 'Device', 'Id'].join(''),
+        ]) {
+            if (key in settings) {
+                delete settings[key];
+                changed = true;
+            }
+        }
+        if (changed) this.saveSettings();
     }
 
     private saveSettings(): void {

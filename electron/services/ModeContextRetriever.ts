@@ -12,7 +12,7 @@ import type { AnswerType } from '../llm/AnswerPlanner';
  * the chunks the answer type may see — sensitive chunks (salary/pricing/private
  * strategy) are dropped unless the answer is a negotiation. When `answerType` is
  * undefined the full blob is returned unchanged (backward compatible). Returns
- * `{ text, sensitiveDropped }` so the caller can record safety telemetry.
+ * `{ text, sensitiveDropped }` so the caller can log local debug context.
  */
 function scopeCustomContext(raw: string, answerType?: AnswerType): { text: string; sensitiveDropped: boolean } {
     const trimmed = raw.trim();
@@ -245,32 +245,15 @@ export class ModeContextRetriever {
      * Falls back to lexical-only if embedding provider is unavailable.
      */
     async retrieveHybrid(mode: Mode, files: ModeReferenceFile[], options: RetrieveOptions): Promise<HybridContext> {
-        // Lazily create hybrid retriever on first use
-        if (!this._hybridRetriever) {
-            const db = DatabaseManager.getInstance().getDb();
-            const dbPath = DatabaseManager.getInstance().getDbPath();
-            if (!db) {
-                console.warn('[ModeContextRetriever] Database not available for hybrid retrieval');
-                // Route through the same throttle the hybrid retriever uses
-                // so a sticky DB outage during a 1-hour meeting can't spam
-                // hundreds of identical events (the retriever is called per
-                // transcript turn). See FINDING-007 in BUGFIX_LOG.
-                ModeHybridRetriever.emitFallbackTelemetryStatic({
-                    reason: 'db_unavailable',
-                    modeId: mode.id,
-                });
-                return { chunks: [], formattedContext: '', usedFallback: true, usedHybrid: false };
-            }
-            // VectorStore needs db, dbPath, and extPath - create minimal instance for mode retrieval
-            const vectorStore = new VectorStore(db, dbPath, '');
-            const embeddingPipeline = new EmbeddingPipeline(db, vectorStore);
-            this._hybridRetriever = new ModeHybridRetriever(db, vectorStore, embeddingPipeline);
+        const retriever = await this.ensureHybridRetriever(mode.id);
+        if (!retriever) {
+            return { chunks: [], formattedContext: '', usedFallback: true, usedHybrid: false };
         }
 
         const queryText = `${options.query}\n${options.transcript ?? ''}`.trim();
         const hasTranscript = !!options.transcript && options.transcript.trim().length > 0;
 
-        const result = await this._hybridRetriever.retrieve({
+        const result = await retriever.retrieve({
             query: queryText,
             modeId: mode.id,
             files,
@@ -282,5 +265,56 @@ export class ModeContextRetriever {
         return result;
     }
 
+    async indexReferenceFiles(files: ModeReferenceFile[], modeId?: string): Promise<{ indexedFiles: number; embeddedChunks: number; embeddingSpace?: string }> {
+        const retriever = await this.ensureHybridRetriever(modeId);
+        if (!retriever) return { indexedFiles: 0, embeddedChunks: 0 };
+        return retriever.indexReferenceFiles(files);
+    }
+
+    private getSelectedEmbeddingModel(): string | undefined {
+        try {
+            const { SettingsManager } = require('./SettingsManager');
+            return SettingsManager.getInstance().get('localEmbeddingModel');
+        } catch {
+            return undefined;
+        }
+    }
+
+    private async ensureHybridRetriever(modeId?: string): Promise<ModeHybridRetriever | null> {
+        const selectedEmbeddingModel = this.getSelectedEmbeddingModel();
+        // Lazily create hybrid retriever on first use and whenever the selected
+        // embedding model changes. Each model has its own embedding_space, so
+        // reusing a retriever across selections would mix vector spaces.
+        if (!this._hybridRetriever || this._hybridEmbeddingModelId !== selectedEmbeddingModel) {
+            const db = DatabaseManager.getInstance().getDb();
+            const dbPath = DatabaseManager.getInstance().getDbPath();
+            if (!db) {
+                console.warn('[ModeContextRetriever] Database not available for hybrid retrieval');
+                void modeId;
+                return null;
+            }
+            // VectorStore needs db, dbPath, and extPath - create minimal instance for mode retrieval.
+            const vectorStore = new VectorStore(db, dbPath, '');
+            const embeddingPipeline = new EmbeddingPipeline(db, vectorStore);
+            this._hybridEmbeddingModelId = selectedEmbeddingModel;
+            this._hybridEmbeddingReady = embeddingPipeline.initialize({ localEmbeddingModel: selectedEmbeddingModel })
+                .catch(err => {
+                    console.warn('[ModeContextRetriever] Mode hybrid embeddings unavailable; lexical fallback will be used:', err?.message || err);
+                });
+            this._hybridRetriever = new ModeHybridRetriever(db, vectorStore, embeddingPipeline);
+        }
+
+        await this._hybridEmbeddingReady;
+        return this._hybridRetriever;
+    }
+
     private _hybridRetriever: ModeHybridRetriever | null = null;
+    private _hybridEmbeddingReady: Promise<void> | null = null;
+    private _hybridEmbeddingModelId: string | undefined | null = null;
+
+    resetEmbeddingRuntime(): void {
+        this._hybridRetriever = null;
+        this._hybridEmbeddingReady = null;
+        this._hybridEmbeddingModelId = null;
+    }
 }

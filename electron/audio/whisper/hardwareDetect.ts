@@ -20,7 +20,7 @@ export function detectHardware(): HardwareInfo {
     const cpuModel = cpus[0]?.model ?? 'Unknown';
     const totalRamGb = Math.round(os.totalmem() / (1024 ** 3));
 
-    // Apple Silicon: arm64 on macOS — Metal GPU acceleration, unified memory
+    // Apple Silicon: arm64 on macOS — unified memory
     const isAppleSilicon = platform === 'darwin' && arch === 'arm64';
     // Intel Mac: x64 on macOS — CPU only, no Metal
     const isIntelMac = platform === 'darwin' && arch === 'x64';
@@ -37,7 +37,7 @@ export function detectHardware(): HardwareInfo {
     // standard Whisper variants sized to RAM.
     if (isAppleSilicon) {
         tier = 'excellent';
-        recommendation = 'Apple Silicon — CoreML activates Metal GPU via ONNX Runtime. Moonshine Base streams in near real-time on the Neural Engine.';
+        recommendation = 'Apple Silicon — native WebGPU uses Metal through Dawn. Moonshine Base streams in near real-time.';
         recommendedModel = 'onnx-community/moonshine-base-ONNX';
     } else if (isIntelMac) {
         tier = 'limited';
@@ -45,11 +45,11 @@ export function detectHardware(): HardwareInfo {
         recommendedModel = 'onnx-community/moonshine-tiny-ONNX';
     } else if (platform === 'win32' && totalRamGb >= 8) {
         tier = 'good';
-        recommendation = 'Windows — DirectML activates GPU acceleration (NVIDIA, AMD, Intel) via ONNX Runtime. Moonshine Base streams in real-time on most gaming hardware.';
+        recommendation = 'Windows — native WebGPU uses D3D12 through Dawn across NVIDIA, AMD, and Intel GPUs.';
         recommendedModel = totalRamGb >= 16 ? 'onnx-community/moonshine-base-ONNX' : 'onnx-community/moonshine-tiny-ONNX';
     } else if (platform === 'linux') {
         tier = 'good';
-        recommendation = 'Linux — ONNX Runtime CPU with int8 quantization. Moonshine Base offers near real-time streaming.';
+        recommendation = 'Linux — native WebGPU uses Vulkan through Dawn when available, with CPU fallback.';
         recommendedModel = 'onnx-community/moonshine-base-ONNX';
     } else {
         tier = 'limited';

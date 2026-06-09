@@ -2,15 +2,12 @@ import React, { useState, useEffect } from 'react';
 import { ToggleLeft, ToggleRight, Search, Calendar, ArrowRight, ArrowLeft, MoreHorizontal, Globe, Clock, ChevronRight, Settings, LayoutGrid, RefreshCw, Eye, EyeOff, Ghost, Plus, Mail, Link as LinkIcon, ChevronDown, Trash2, Bell, Check, Download, DownloadCloud, CheckCircle, AlertCircle, User, UserSearch, Sparkles, ArrowUpRight } from 'lucide-react';
 import { generateMeetingPDF } from '../utils/pdfGenerator';
 import icon from "./icon.png";
-import mainui from "../UI_comp/mainui.png";
 import calender from "../UI_comp/calender.png";
 import ConnectCalendarButton from './ui/ConnectCalendarButton';
 import MeetingDetails from './MeetingDetails';
 import TopSearchPill from './TopSearchPill';
 import GlobalChatOverlay from './GlobalChatOverlay';
 import { motion, AnimatePresence } from 'framer-motion';
-import { FeatureSpotlight } from './FeatureSpotlight';
-import { analytics } from '../lib/analytics/analytics.service'; // Added analytics import
 import { useShortcuts } from '../hooks/useShortcuts';
 import { useResolvedTheme } from '../hooks/useResolvedTheme';
 import { isMac } from '../utils/platformUtils';
@@ -110,7 +107,6 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onO
 
     const handleRefresh = async () => {
         setIsRefreshing(true);
-        analytics.trackCommandExecuted('refresh_calendar');
         try {
             if (window.electronAPI && window.electronAPI.calendarRefresh) {
                 setShowNotification(true);
@@ -265,7 +261,6 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onO
         const newState = !isDetectable;
         setIsDetectable(newState);
         window.electronAPI?.setUndetectable(!newState); // Note: setUndetectable takes the *undetectable* state, which is inverse of *detectable*
-        analytics.trackModeSelected(newState ? 'launcher' : 'undetectable'); // If visible (detectable), mode is normal/launcher. If not detectable, mode is undetectable.
     };
 
     // Group meetings
@@ -314,7 +309,6 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onO
     const handleOpenMeeting = async (meeting: Meeting) => {
         setForwardMeeting(null); // Clear forward history on new navigation
         console.log("[Launcher] Opening meeting:", meeting.id);
-        analytics.trackCommandExecuted('open_meeting_details');
 
         // Fetch full meeting details including transcript and usage
         if (window.electronAPI && window.electronAPI.getMeetingDetails) {
@@ -414,14 +408,12 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onO
                 <TopSearchPill
                     meetings={meetings}
                     onAIQuery={(query) => {
-                        analytics.trackCommandExecuted('ai_query_search');
                         setSubmittedGlobalQuery(query);
                         setIsGlobalChatOpen(true);
                     }}
                     onLiteralSearch={(query) => {
                         // For now, also use AI query for literal search
                         // Could be enhanced to do fuzzy filtering in the UI
-                        analytics.trackCommandExecuted('literal_search');
                         setSubmittedGlobalQuery(query);
                         setIsGlobalChatOpen(true);
                     }}
@@ -429,7 +421,6 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onO
                         const meeting = meetings.find(m => m.id === meetingId);
                         if (meeting) {
                             handleOpenMeeting(meeting);
-                            analytics.trackCommandExecuted('open_meeting_from_search');
                         }
                     }}
                 />
@@ -542,7 +533,7 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onO
                                 window.electronAPI?.onboardingSetFlag?.('seenModesOnboarding', true).catch(() => {});
                                 onOpenModes?.();
                             }}
-                            title="Modes"
+                            title="Presets"
                             className={`p-2 text-text-secondary hover:text-text-primary transition-all duration-300 ${isLight ? 'hover:drop-shadow-[0_0_6px_rgba(0,0,0,0.25)]' : 'hover:drop-shadow-[0_0_8px_rgba(255,255,255,0.5)]'}`}
                         >
                             <svg width={18} height={18} viewBox="0 0 14 14" fill="none">
@@ -588,7 +579,7 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onO
                                         </div>
                                         <div className="flex-1 pt-[2px]">
                                             <h3 className="text-[14px] font-semibold tracking-[-0.015em] mb-1 flex items-center gap-2">
-                                                <span className={isLight ? 'text-slate-900' : 'text-slate-100'}>Modes</span>
+                                                <span className={isLight ? 'text-slate-900' : 'text-slate-100'}>Presets</span>
                                                 <span className={`text-[10px] font-medium px-1.5 py-[1px] rounded-[5px] ${
                                                     isLight
                                                     ? 'bg-orange-50 text-orange-600 border border-orange-100/50'
@@ -802,10 +793,8 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onO
                                                     // logo-click set currentWindowMode='launcher', so showWindow()
                                                     // would re-show the launcher rather than switch to overlay.
                                                     window.electronAPI?.setWindowMode?.('overlay', true);
-                                                    analytics.trackCommandExecuted('resume_meeting_from_launcher');
                                                 } else {
                                                     onStartMeeting();
-                                                    analytics.trackCommandExecuted('start_natively_cta');
                                                 }
                                             }}
                                             whileHover={{ scale: 1.01, filter: 'brightness(1.1)' }}
@@ -872,18 +861,9 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onO
                                         </motion.button>
                                     </div>
 
-                                    {/* 2. Hero Section Cards */}
-                                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3 h-[198px]">
-                                        {/* Default Intro — natively support & upcoming features.
-                                            Calendar "Up Next" lives in Settings → Calendar, not here. */}
-                                        <div className="md:col-span-2 h-full">
-                                            <FeatureSpotlight />
-                                        </div>
-
-
-
-                                        {/* Right Secondary Card — violet-tinted, "Calendar Connected" + peeking next meeting */}
-                                        <div className="md:col-span-1 rounded-xl overflow-hidden bg-bg-elevated relative group flex flex-col shadow-[inset_0_1px_1px_rgba(255,255,255,0.08)]">
+                                    {/* Calendar */}
+                                    <div className="h-[198px]">
+                                        <div className="h-full rounded-xl overflow-hidden bg-bg-elevated relative group flex flex-col shadow-[inset_0_1px_1px_rgba(255,255,255,0.08)]">
                                             {/* Backdrop image with violet tint mask */}
                                             <div className="absolute inset-0">
                                                 <img
@@ -1131,7 +1111,6 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onO
                                                                                 className={`w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-text-primary rounded-lg transition-colors text-left ${isLight ? 'hover:bg-bg-item-surface' : 'hover:bg-white/10'}`}
                                                                                 onClick={async () => {
                                                                                     setActiveMenuId(null);
-                                                                                    analytics.trackPdfExported();
                                                                                     // Fetch full details if needed
                                                                                     if (window.electronAPI && window.electronAPI.getMeetingDetails) {
                                                                                         try {

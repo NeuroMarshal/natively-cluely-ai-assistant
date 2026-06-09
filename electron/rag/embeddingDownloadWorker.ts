@@ -33,6 +33,9 @@ parentPort.on('message', async (msg: { modelId?: string; cacheDir?: string }) =>
         parentPort!.postMessage({
           type: 'progress',
           progress: total > 0 ? Math.min(100, Math.round((loaded / total) * 100)) : 0,
+          loadedBytes: loaded,
+          totalBytes: total,
+          currentFile: event.file,
         });
       },
     });

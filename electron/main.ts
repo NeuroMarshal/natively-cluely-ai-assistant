@@ -576,29 +576,6 @@ export class AppState {
       this.cropperWindowHelper.preload();
     }
 
-    // Warm the local Whisper worker in the background so the first recording
-    // session starts instantly instead of waiting for model load from disk.
-    // Only fires if local-whisper is selected AND a model is already cached.
-    setImmediate(() => {
-      try {
-        const { CredentialsManager } = require('./services/CredentialsManager');
-        if (CredentialsManager.getInstance().getSttProvider() === 'local-whisper') {
-          const { isModelCached } = require('./audio/whisper/modelManager');
-          const { modelPreloader } = require('./audio/whisper/modelPreloader');
-          const { resolveInferenceConfig } = require('./audio/whisper/inferenceConfig');
-          const modelId = settingsManager.get('localWhisperModel') ?? 'Xenova/whisper-tiny.en';
-          const { dtype } = resolveInferenceConfig();
-          if (isModelCached(modelId, dtype)) {
-            console.log(`[AppState] Preloading local Whisper model: ${modelId}`);
-            modelPreloader.preload(modelId);
-          }
-        }
-      } catch (e) {
-        // Non-fatal — recording still works, just with a cold-start delay
-        console.warn('[AppState] Local Whisper preload skipped:', e);
-      }
-    });
-
     // Initialize KeybindManager
     const keybindManager = KeybindManager.getInstance();
     keybindManager.setWindowHelper(this.windowHelper);
@@ -1507,8 +1484,9 @@ export class AppState {
       }
     } else if (sttProvider === 'local-whisper') {
       const { LocalWhisperSTT } = require('./audio/LocalWhisperSTT');
+      const { resolveActiveWhisperModelId } = require('./audio/whisper/modelManager');
       const sm = SettingsManager.getInstance();
-      const globalModel = sm.get('localWhisperModel') ?? 'Xenova/whisper-tiny.en';
+      const globalModel = sm.get('localWhisperModel');
       // Per-channel override: when enabled the two STT instances may load
       // different models (e.g. Moonshine Tiny for mic, Moonshine Base for
       // system audio). Falls back to globalModel if the per-channel slot is
@@ -1519,6 +1497,16 @@ export class AppState {
           ? sm.get('localWhisperModelSystem')
           : sm.get('localWhisperModelMic');
         if (override) modelId = override;
+      }
+      // Resolve to a model that still exists in the catalog. A stored selection
+      // pointing at a removed model (e.g. the dropped large-v3-turbo, which
+      // could load but never transcribe) would otherwise fail every segment.
+      modelId = resolveActiveWhisperModelId(modelId);
+      // Self-heal a stale GLOBAL selection so the model panel reflects reality
+      // (the picker highlights localWhisperModel; an unknown id shows nothing).
+      if (globalModel && globalModel !== modelId && !sm.get('localWhisperPerChannelEnabled')) {
+        sm.set('localWhisperModel', modelId);
+        console.log(`[Main] Migrated removed STT model "${globalModel}" → "${modelId}"`);
       }
       console.log(`[Main] Using LocalWhisperSTT for ${speaker}, model: ${modelId}`);
       const lws = new LocalWhisperSTT(modelId);
@@ -1637,7 +1625,10 @@ export class AppState {
       const isQuotaError = err.message.toLowerCase().includes('transcription_quota_exceeded')
         || err.message.toLowerCase().includes('quota');
 
-      if (isAuthError) {
+      const isLocalWhisperModelLoadError = (err as any)?.code === 'LOCAL_WHISPER_MODEL_LOAD_FAILED'
+        || /Local Whisper model .* failed to load|Model failed to load:/i.test(err.message || '');
+
+      if (isAuthError || isLocalWhisperModelLoadError) {
         _consecutiveErrors = 0;
         _lastState = 'failed';
         this.sendSttStatus( {
@@ -1692,7 +1683,7 @@ export class AppState {
       }
     });
 
-    // Non-fatal telemetry from providers (e.g. OpenAIStreamingSTT emits this
+    // Non-fatal warning from providers (e.g. OpenAIStreamingSTT emits this
     // when the pre-session ring buffer evicts leading audio while waiting for
     // the WebSocket handshake). Surface it in the main-process log so the
     // signal isn't silently dropped — the event is informational, not a status
@@ -2220,6 +2211,16 @@ export class AppState {
       if (!this.googleSTT_User) {
         console.log('[Main] Pre-warming user STT provider...');
         this.googleSTT_User = this.createSTTProvider('user');
+      }
+      const { CredentialsManager } = require('./services/CredentialsManager');
+      if (CredentialsManager.getInstance().getSttProvider() === 'local-whisper') {
+        const sm = SettingsManager.getInstance();
+        const configuredModel = sm.get('localWhisperPerChannelEnabled')
+          ? sm.get('localWhisperModelSystem')
+          : sm.get('localWhisperModel');
+        const { resolveActiveWhisperModelId } = require('./audio/whisper/modelManager');
+        const { modelPreloader } = require('./audio/whisper/modelPreloader');
+        modelPreloader.preload(resolveActiveWhisperModelId(configuredModel));
       }
     } catch (err) {
       // Pre-warm failure is non-fatal; setupSystemAudioPipeline will retry on
@@ -3649,13 +3650,11 @@ export class AppState {
     // Action store is per-(sessionId, modeId), so a fresh sessionId here gives
     // us per-meeting isolation. Re-binding on mode switch is handled in the
     // modes:set-active IPC handler.
-    let _meetingTelemetrySessionId: string | undefined;
     try {
       const { ModesManager } = require('./services/ModesManager');
       const activeMode = ModesManager.getInstance().getActiveMode();
       if (activeMode) {
         const sessionId = `session_${crypto.randomUUID()}`;
-        _meetingTelemetrySessionId = sessionId;
         this.intelligenceManager.setDynamicActionContext({
           sessionId,
           modeId: activeMode.id,
@@ -3666,19 +3665,6 @@ export class AppState {
       // Auxiliary feature — never block meeting start.
       console.warn('[Main] failed to bind dynamic action context at meeting start:', (err as Error)?.message);
     }
-
-    // Phase 6 — meeting_start telemetry (no transcript / no PII).
-    try {
-      const { telemetryService } = require('./services/telemetry/TelemetryService');
-      const { ModesManager } = require('./services/ModesManager');
-      const am = ModesManager.getInstance().getActiveMode();
-      telemetryService.track({
-        name: 'meeting_start',
-        sessionId: _meetingTelemetrySessionId,
-        modeId: am?.id,
-        properties: { modeTemplateType: am?.templateType, hasMetadata: Boolean(metadata) },
-      });
-    } catch { /* non-fatal */ }
 
     // Emit session reset to clear UI state immediately
     this.getWindowHelper().getOverlayWindow()?.webContents.send('session-reset');
@@ -3829,19 +3815,6 @@ export class AppState {
     // the new in-flight-audio-init await below yields the event loop.
     this._endMeetingInFlight = true;
     console.log('[Main] Ending Meeting...');
-
-    // Phase 6 — meeting_stop telemetry. Emit BEFORE any teardown so a crash
-    // in stop logic still records the stop event.
-    try {
-      const { telemetryService } = require('./services/telemetry/TelemetryService');
-      const { ModesManager } = require('./services/ModesManager');
-      const am = ModesManager.getInstance().getActiveMode();
-      telemetryService.track({
-        name: 'meeting_stop',
-        modeId: am?.id,
-        properties: { modeTemplateType: am?.templateType },
-      });
-    } catch { /* non-fatal */ }
 
     // Reset Mouse Passthrough so the next meeting overlay starts fresh and focusable
     if (this.overlayMousePassthrough) {
@@ -4161,24 +4134,6 @@ export class AppState {
       const helper = this.getWindowHelper();
       helper.getLauncherWindow()?.webContents.send('intelligence-dynamic-action', { action });
       helper.getOverlayWindow()?.webContents.send('intelligence-dynamic-action', { action });
-      // Phase 6 — telemetry: log detection (sanitized: NO transcript text, NO
-      // evidence body — only ids, type, mode, confidence). The TelemetryService
-      // sanitizer also strips transcript-shaped fields defensively.
-      try {
-        const { telemetryService } = require('./services/telemetry/TelemetryService');
-        telemetryService.track({
-          name: 'dynamic_action_detected',
-          sessionId: action?.sessionId,
-          modeId: action?.modeId,
-          properties: {
-            actionId: action?.id,
-            actionType: action?.type,
-            modeTemplateType: action?.modeTemplateType,
-            confidence: action?.confidence,
-            priority: action?.priority,
-          },
-        });
-      } catch { /* non-fatal */ }
     })
 
     this.intelligenceManager.on('suggested_answer', (answer: string, question: string, confidence: number) => {
@@ -4341,11 +4296,9 @@ export class AppState {
     const { CredentialsManager } = require('./services/CredentialsManager');
     CredentialsManager.getInstance().setSttLanguage(key);
 
-    const effectiveKey = key === 'auto' ? 'english-us' : key;
-
-    this.googleSTT?.setRecognitionLanguage(effectiveKey);
-    this.googleSTT_User?.setRecognitionLanguage(effectiveKey);
-    this.processingHelper.getLLMHelper().setSttLanguage(effectiveKey);
+    this.googleSTT?.setRecognitionLanguage(key);
+    this.googleSTT_User?.setRecognitionLanguage(key);
+    this.processingHelper.getLLMHelper().setSttLanguage(key);
   }
 
   public static getInstance(): AppState {
@@ -5291,24 +5244,6 @@ async function initializeApp() {
   }
 
   // 3. Initialize Managers
-  // Phase 6 — bind TelemetryService to the Electron userData path. The
-  // singleton was constructed with cwd-relative paths at module-load time
-  // (before app.whenReady), so we reconfigure here. Honors the user's
-  // telemetry-enabled setting (default: on, local-only JSONL).
-  try {
-    const { telemetryService } = require('./services/telemetry/TelemetryService');
-    const userDataPath = app.getPath('userData');
-    const telemetryEnabledSetting = SettingsManager.getInstance().get('telemetryEnabled');
-    telemetryService.configure({
-      userDataPath,
-      enabled: telemetryEnabledSetting !== false, // default true
-      localEnabled: true,
-    });
-    telemetryService.track({ name: 'app_start', properties: { platform: process.platform } });
-  } catch (err) {
-    console.warn('[Init] TelemetryService configure threw (non-fatal):', err);
-  }
-
   // Initialize CredentialsManager and load keys explicitly
   // This fixes the issue where keys (especially in production) aren't loaded in time for RAG/LLM
   const { CredentialsManager } = require('./services/CredentialsManager');

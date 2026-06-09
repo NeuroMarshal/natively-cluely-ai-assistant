@@ -81,8 +81,6 @@ function makeFakeNativeInstance(kind) {
 }
 
 const fakeNativeModule = {
-    getHardwareId: () => 'fake-hw',
-    verifyGumroadKey: async () => 'fake',
     getInputDevices: () => [],
     getOutputDevices: () => [],
     SystemAudioCapture: function SystemAudioCaptureCtor(_deviceId) {

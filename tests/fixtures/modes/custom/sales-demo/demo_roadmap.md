@@ -4,7 +4,7 @@
 - Apostrophe-safe retrieval tokenizer (shipped)
 - Hybrid lexical + vector retrieval (shipped)
 - Custom provider data scope toggles (shipped)
-- Lexical fallback telemetry visibility (shipped)
+- Lexical fallback diagnostics visibility (shipped)
 
 ## Q3 2026
 - Q3 2026 ships first-class custom modes and Playwright E2E gating

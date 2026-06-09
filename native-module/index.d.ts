@@ -38,18 +38,6 @@ export interface AudioDeviceInfo {
 }
 
 /**
- * Deactivates a Dodo Payments license activation instance.
- *
- * `instance_id` — the activation instance ID (e.g. "lki_xxx") returned at activation time.
- * This is stored in the encrypted license file and passed here to free the slot.
- *
- * Returns a Promise resolving to "OK" or "ERR:dodo:<reason>".
- * Network errors return "ERR:dodo:network:..." — callers should still remove the local license
- * file even on network failure (fail-safe: local removal always happens).
- */
-export declare function deactivateDodoKey(licenseKey: string, instanceId: string): Promise<unknown>
-
-/**
  * Returns the platform-native ID of the current default output device.
  * macOS: CoreAudio device UID. Windows: WASAPI device id (eMultimedia/eConsole role).
  * Empty string on error or unsupported platform.
@@ -62,39 +50,6 @@ export declare function deactivateDodoKey(licenseKey: string, instanceId: string
  */
 export declare function getDefaultOutputDeviceId(): string
 
-/**
- * Returns a deterministic hardware fingerprint (SHA-256 hash of the machine UID).
- * This is used to lock license keys to a specific physical device.
- */
-export declare function getHardwareId(): string
-
 export declare function getInputDevices(): Array<AudioDeviceInfo>
 
 export declare function getOutputDevices(): Array<AudioDeviceInfo>
-
-/**
- * Validates an existing Dodo Payments license key against the live API.
- *
- * Used for periodic startup checks to detect server-side revocations.
- * Returns a Promise resolving to "OK", "REVOKED", or "ERR:dodo:...".
- * Network errors return "ERR:dodo:network:..." so callers can fail-open.
- */
-export declare function validateDodoKey(licenseKey: string): Promise<unknown>
-
-/**
- * Activates a Dodo Payments license key against the live API.
- *
- * `device_label` — first 32 chars of the HWID hash; passed as the `name` field so the
- * merchant can correlate activations to devices in the Dodo dashboard.
- *
- * Returns a Promise resolving to "OK:<instance_id>" on success, or "ERR:dodo:<reason>".
- * The HTTP call runs on a libuv worker thread to prevent blocking the Node.js event loop.
- */
-export declare function verifyDodoKey(licenseKey: string, deviceLabel: string): Promise<unknown>
-
-/**
- * Validates a Gumroad license key by calling the Gumroad Licenses API.
- * Returns a Promise that resolves to "OK" on success, or an error message string on failure.
- * The HTTP call runs on a libuv worker thread to prevent blocking the Node.js event loop.
- */
-export declare function verifyGumroadKey(licenseKey: string): Promise<unknown>

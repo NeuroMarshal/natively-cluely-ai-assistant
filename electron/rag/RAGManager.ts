@@ -10,7 +10,7 @@ import { VectorStore } from './VectorStore';
 import { EmbeddingPipeline } from './EmbeddingPipeline';
 import { RAGRetriever } from './RAGRetriever';
 import { LiveRAGIndexer } from './LiveRAGIndexer';
-import { buildRAGPrompt, NO_CONTEXT_FALLBACK, NO_GLOBAL_CONTEXT_FALLBACK } from './prompts';
+import { buildRAGPrompt, NO_GLOBAL_CONTEXT_FALLBACK } from './prompts';
 import type { ProviderDataScopePolicy } from '../llm/ProviderRouter';
 
 export interface RAGManagerConfig {
@@ -93,6 +93,11 @@ export class RAGManager {
             this.scheduleAutoReindex();
         }
         return initPromise;
+    }
+
+    async reloadLocalRuntime(localEmbeddingModel?: string): Promise<void> {
+        await this.embeddingPipeline.forceReinitialize({ localEmbeddingModel });
+        this._backfillEmbeddingProviderMetadata();
     }
 
     private _backfillEmbeddingProviderMetadata(): void {

@@ -65,6 +65,7 @@ export class EmbeddingPipeline {
             openaiKey: !!config.openaiKey,
             geminiKey: !!config.geminiKey,
             ollamaUrl: config.ollamaUrl || null,
+            localEmbeddingModel: config.localEmbeddingModel || null,
             geminiEmbeddingModel: config.geminiEmbeddingModel || null,
             geminiEmbeddingDims: config.geminiEmbeddingDims || null,
         });
@@ -76,6 +77,20 @@ export class EmbeddingPipeline {
             .catch(() => { /* a later valid selection may recover */ })
             .then(() => this._doInitialize(config));
         return this.initPromise;
+    }
+
+    async forceReinitialize(config: AppAPIConfig): Promise<void> {
+        const current = this.provider as any;
+        this.provider = null;
+        this.fallbackProvider = null;
+        this._lastConfig = null;
+        this.initPromise = null;
+        try {
+            await current?.dispose?.();
+        } catch {
+            // Provider cleanup is best-effort; initialization below is authoritative.
+        }
+        await this.initialize(config);
     }
 
     /**

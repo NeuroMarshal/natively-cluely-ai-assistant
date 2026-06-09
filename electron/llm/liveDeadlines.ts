@@ -74,9 +74,9 @@ export async function raceStreamWithDeadline(opts: {
   onToken: (value: string) => void | Promise<void>;
   /** Return true once `accumulated` is user-useful. */
   isUsefulYet: () => boolean;
-  /** Called once the deadline fires before any useful token (for telemetry). */
+  /** Called once the deadline fires before any useful token. */
   onFirstUsefulTimeout?: () => void;
-  /** Called on an inter-token stall after streaming began (for telemetry). */
+  /** Called on an inter-token stall after streaming began. */
   onStallTimeout?: () => void;
   /** Bail predicate (e.g. superseded by a newer generation). */
   shouldAbort?: () => boolean;

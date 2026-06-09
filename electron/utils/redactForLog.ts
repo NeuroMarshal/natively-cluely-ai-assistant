@@ -16,9 +16,8 @@ const MAX_PREVIEW_LEN = 120;
 
 /**
  * Property keys whose value should be REDACTED in serialized log output.
- * The list mirrors TelemetryService.SENSITIVE_KEY_RE but is independently
- * defined here so the redactor has no runtime dependency on the telemetry
- * module (avoids circular imports from main.ts).
+ * Property names that must never leave the process with raw user data or
+ * credentials attached.
  */
 const SENSITIVE_KEY_RE = /(api[_-]?key|authorization|bearer|token|secret|password|credential|raw[_-]?(transcript|prompt|reference|content|query)|transcript(text)?|prompt|reference(content)?|evidence(text)?|screenshot(path)?|image(path)?|error(body|response|message)?|responsebody|body|query(text|string)?|user(input|message)|chunk(text|content)?|snippet(text)?|cookie|set[_-]?cookie|signature|x[_-]?api[_-]?key|x[_-]?trial[_-]?token|x[_-]?natively[_-]?key)$/i;
 

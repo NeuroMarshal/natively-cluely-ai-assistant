@@ -38,7 +38,7 @@ export class ErrorBoundary extends Component<Props, State> {
         console.error(`[ErrorBoundary:${context}] Uncaught render error:`, error, info.componentStack);
         this.setState({ componentStack: info.componentStack ?? '' });
 
-        // Report to analytics if IPC is available (non-blocking)
+        // Forward local renderer errors to the main-process log if available.
         try {
             // @ts-ignore  
             window.electronAPI?.logErrorToMain?.({
@@ -48,7 +48,7 @@ export class ErrorBoundary extends Component<Props, State> {
                 stack: error?.stack,
                 componentStack: info.componentStack
             });
-        } catch { /* analytics must never crash the handler */ }
+        } catch { /* logging must never crash the handler */ }
     }
 
     private handleReload = (): void => {

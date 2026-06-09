@@ -60,5 +60,5 @@ AGPL-3.0 still applies to the whole work:
   that exact build, including local changes and build scripts needed to recreate
   it.
 
-This fork is free software: there is nothing to purchase and no telemetry-gated
+This fork is free software: there is nothing to purchase and no gated
 functionality.

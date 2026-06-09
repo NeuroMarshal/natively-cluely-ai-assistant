@@ -30,6 +30,7 @@ export interface ModeRetrievedContext {
 export interface ModeReferenceIndexState {
     fileId: string;
     fileHash: string;
+    embeddingSpace?: string | null;
     indexedAt: number;
     chunkCount: number;
 }
@@ -94,10 +95,23 @@ function hashContent(content: string): string {
 interface ChunkCandidate {
     sourceId: string;
     fileName: string;
+    fileHash: string;
     text: string;
     chunkIndex: number;
+    chunkCount: number;
     ftsScore: number;
     vectorScore: number;
+}
+
+function embeddingToBuffer(embedding: number[]): Buffer {
+    const f32 = new Float32Array(embedding);
+    return Buffer.from(new Uint8Array(f32.buffer));
+}
+
+function bufferToEmbedding(blob: Buffer | Uint8Array): number[] {
+    const buffer = Buffer.isBuffer(blob) ? blob : Buffer.from(blob);
+    const copied = buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
+    return Array.from(new Float32Array(copied));
 }
 
 export class ModeHybridRetriever {
@@ -121,10 +135,33 @@ export class ModeHybridRetriever {
                 CREATE TABLE IF NOT EXISTS mode_reference_index_state (
                     file_id TEXT PRIMARY KEY,
                     file_hash TEXT NOT NULL,
+                    embedding_space TEXT,
                     indexed_at INTEGER NOT NULL,
                     chunk_count INTEGER NOT NULL DEFAULT 0
                 );
+
+                CREATE TABLE IF NOT EXISTS mode_reference_chunk_embeddings (
+                    file_id TEXT NOT NULL,
+                    file_hash TEXT NOT NULL,
+                    chunk_index INTEGER NOT NULL,
+                    text TEXT NOT NULL,
+                    embedding BLOB NOT NULL,
+                    embedding_space TEXT NOT NULL,
+                    embedding_dimensions INTEGER NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    PRIMARY KEY (file_id, file_hash, chunk_index, embedding_space)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_mode_ref_embeddings_file
+                    ON mode_reference_chunk_embeddings(file_id, file_hash);
+                CREATE INDEX IF NOT EXISTS idx_mode_ref_embeddings_space
+                    ON mode_reference_chunk_embeddings(embedding_space);
             `);
+            try {
+                this.db.exec('ALTER TABLE mode_reference_index_state ADD COLUMN embedding_space TEXT');
+            } catch (_) {
+                // Column already exists on upgraded databases.
+            }
         } catch (e) {
             console.warn('[ModeHybridRetriever] Failed to create index state table:', e);
         }
@@ -136,12 +173,13 @@ export class ModeHybridRetriever {
     private getIndexState(fileId: string): ModeReferenceIndexState | null {
         try {
             const row = this.db.prepare(
-                'SELECT file_id, file_hash, indexed_at, chunk_count FROM mode_reference_index_state WHERE file_id = ?'
+                'SELECT file_id, file_hash, embedding_space, indexed_at, chunk_count FROM mode_reference_index_state WHERE file_id = ?'
             ).get(fileId) as any;
             if (!row) return null;
             return {
                 fileId: row.file_id,
                 fileHash: row.file_hash,
+                embeddingSpace: row.embedding_space ?? null,
                 indexedAt: row.indexed_at,
                 chunkCount: row.chunk_count
             };
@@ -153,12 +191,12 @@ export class ModeHybridRetriever {
     /**
      * Update the index state for a file after embedding its chunks
      */
-    private updateIndexState(fileId: string, contentHash: string, chunkCount: number): void {
+    private updateIndexState(fileId: string, contentHash: string, chunkCount: number, embeddingSpace?: string): void {
         try {
             this.db.prepare(`
-                INSERT OR REPLACE INTO mode_reference_index_state (file_id, file_hash, indexed_at, chunk_count)
-                VALUES (?, ?, ?, ?)
-            `).run(fileId, contentHash, Date.now(), chunkCount);
+                INSERT OR REPLACE INTO mode_reference_index_state (file_id, file_hash, embedding_space, indexed_at, chunk_count)
+                VALUES (?, ?, ?, ?, ?)
+            `).run(fileId, contentHash, embeddingSpace ?? null, Date.now(), chunkCount);
         } catch (e) {
             console.warn('[ModeHybridRetriever] Failed to update index state:', e);
         }
@@ -170,8 +208,19 @@ export class ModeHybridRetriever {
     private removeIndexState(fileId: string): void {
         try {
             this.db.prepare('DELETE FROM mode_reference_index_state WHERE file_id = ?').run(fileId);
+            this.db.prepare('DELETE FROM mode_reference_chunk_embeddings WHERE file_id = ?').run(fileId);
         } catch (e) {
             console.warn('[ModeHybridRetriever] Failed to remove index state:', e);
+        }
+    }
+
+    private purgeStaleEmbeddingRows(fileId: string, currentHash: string): void {
+        try {
+            this.db.prepare(
+                'DELETE FROM mode_reference_chunk_embeddings WHERE file_id = ? AND file_hash != ?'
+            ).run(fileId, currentHash);
+        } catch (e) {
+            console.warn('[ModeHybridRetriever] Failed to purge stale reference embeddings:', e);
         }
     }
 
@@ -191,13 +240,18 @@ export class ModeHybridRetriever {
             // Check if file has changed - if hash matches and we have chunks, skip re-chunking
             // However, we still need to chunk for retrieval even if not re-indexing
             const chunks = this.chunkText(content);
+            if (!existingState || existingState.fileHash !== contentHash) {
+                this.purgeStaleEmbeddingRows(file.id, contentHash);
+            }
 
             for (let i = 0; i < chunks.length; i++) {
                 candidates.push({
                     sourceId: file.id,
                     fileName: file.fileName || 'unknown',
+                    fileHash: contentHash,
                     text: chunks[i],
                     chunkIndex: i,
+                    chunkCount: chunks.length,
                     ftsScore: 0,  // Computed later per query
                     vectorScore: 0
                 });
@@ -280,108 +334,74 @@ export class ModeHybridRetriever {
         return this.embeddingPipeline.isReady();
     }
 
-    /**
-     * Per-(modeId, reason) emission timestamps for throttling. An embedding-
-     * provider outage during a 1-hour meeting can trigger fallback on every
-     * transcript-final + every typed input; without throttling that's
-     * hundreds of identical events into the JSONL. We emit at most once per
-     * THROTTLE_MS per (modeId, reason).
-     */
-    private static fallbackEmittedAtByKey = new Map<string, number>();
-    private static readonly FALLBACK_THROTTLE_MS = 60_000;
-
-    /**
-     * Emit a telemetry event when the retriever falls back to lexical-only.
-     * Support and product need this signal in production logs — the previous
-     * console.warn vanished into Electron stderr where nobody noticed when
-     * the embedding provider quietly broke. See FINDING-007.
-     *
-     * Loaded lazily via require so this file can still be unit-tested via
-     * compiled `dist-electron` without dragging the telemetry log path into
-     * the test working directory.
-     */
-    private emitFallbackTelemetry(props: {
-        reason: 'embedding_unavailable' | 'hybrid_threw' | 'db_unavailable';
-        candidateCount: number;
-        queryTokenCount: number;
-        modeId?: string;
-        errorClass?: string;
-    }): void {
+    private loadCachedChunkEmbedding(candidate: ChunkCandidate, embeddingSpace: string, dimensions: number): number[] | null {
         try {
-            const now = Date.now();
-            const key = `${props.modeId ?? '_'}::${props.reason}`;
-            const last = ModeHybridRetriever.fallbackEmittedAtByKey.get(key) ?? 0;
-            if (now - last < ModeHybridRetriever.FALLBACK_THROTTLE_MS) return;
-            ModeHybridRetriever.fallbackEmittedAtByKey.set(key, now);
-
-            // eslint-disable-next-line @typescript-eslint/no-var-requires
-            const { telemetryService } = require('../telemetry/TelemetryService');
-            telemetryService.track({
-                name: 'rag_lexical_fallback',
-                modeId: props.modeId,
-                properties: {
-                    reason: props.reason,
-                    candidateCount: props.candidateCount,
-                    queryTokenCount: props.queryTokenCount,
-                    errorClass: props.errorClass,
-                    // Optional test-run marker. Tests set NATIVELY_TELEMETRY_TEST_RUN_ID
-                    // to filter events emitted by their specific run, isolating
-                    // from any parallel test or stale JSONL line. Production
-                    // leaves this unset.
-                    testRunId: process.env.NATIVELY_TELEMETRY_TEST_RUN_ID || undefined,
-                },
-            });
+            const row = this.db.prepare(`
+                SELECT embedding
+                FROM mode_reference_chunk_embeddings
+                WHERE file_id = ?
+                  AND file_hash = ?
+                  AND chunk_index = ?
+                  AND embedding_space = ?
+                  AND embedding_dimensions = ?
+            `).get(candidate.sourceId, candidate.fileHash, candidate.chunkIndex, embeddingSpace, dimensions) as any;
+            if (!row?.embedding) return null;
+            const embedding = bufferToEmbedding(row.embedding);
+            return embedding.length === dimensions ? embedding : null;
         } catch {
-            // Telemetry must never block retrieval. Failures here are
-            // intentionally swallowed; the console.warn at the callsite is
-            // still the human-facing breadcrumb.
+            return null;
         }
     }
 
-    /**
-     * Reset the throttle cache. Test-only hook — production retains the
-     * default 60-second debounce.
-     */
-    public static __resetFallbackThrottleForTests(): void {
-        ModeHybridRetriever.fallbackEmittedAtByKey.clear();
+    private storeCachedChunkEmbedding(
+        candidate: ChunkCandidate,
+        embeddingSpace: string,
+        dimensions: number,
+        embedding: number[],
+    ): void {
+        if (embedding.length !== dimensions) return;
+        try {
+            this.db.prepare(`
+                INSERT OR REPLACE INTO mode_reference_chunk_embeddings
+                    (file_id, file_hash, chunk_index, text, embedding, embedding_space, embedding_dimensions, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            `).run(
+                candidate.sourceId,
+                candidate.fileHash,
+                candidate.chunkIndex,
+                candidate.text,
+                embeddingToBuffer(embedding),
+                embeddingSpace,
+                dimensions,
+                Date.now(),
+            );
+        } catch (e) {
+            console.warn('[ModeHybridRetriever] Failed to cache reference embedding:', e);
+        }
     }
 
-    /**
-     * Static emitter for callers outside this class (e.g.
-     * ModeContextRetriever's db-unavailable branch) that still need to
-     * share the (modeId, reason) throttle. Always goes through the same
-     * 60-second debounce so a sticky outage cannot spam thousands of
-     * events from a per-turn caller.
-     */
-    public static emitFallbackTelemetryStatic(props: {
-        reason: 'embedding_unavailable' | 'hybrid_threw' | 'db_unavailable';
-        candidateCount?: number;
-        queryTokenCount?: number;
-        modeId?: string;
-        errorClass?: string;
-    }): void {
-        try {
-            const now = Date.now();
-            const key = `${props.modeId ?? '_'}::${props.reason}`;
-            const last = ModeHybridRetriever.fallbackEmittedAtByKey.get(key) ?? 0;
-            if (now - last < ModeHybridRetriever.FALLBACK_THROTTLE_MS) return;
-            ModeHybridRetriever.fallbackEmittedAtByKey.set(key, now);
+    private updateFullyCachedIndexState(
+        candidates: ChunkCandidate[],
+        embeddings: Array<number[] | null>,
+        embeddingSpace: string,
+    ): void {
+        const byFile = new Map<string, { hash: string; chunkCount: number; seen: number; embedded: number }>();
+        candidates.forEach((candidate, index) => {
+            const entry = byFile.get(candidate.sourceId) ?? {
+                hash: candidate.fileHash,
+                chunkCount: candidate.chunkCount,
+                seen: 0,
+                embedded: 0,
+            };
+            entry.seen++;
+            if (embeddings[index]) entry.embedded++;
+            byFile.set(candidate.sourceId, entry);
+        });
 
-            // eslint-disable-next-line @typescript-eslint/no-var-requires
-            const { telemetryService } = require('../telemetry/TelemetryService');
-            telemetryService.track({
-                name: 'rag_lexical_fallback',
-                modeId: props.modeId,
-                properties: {
-                    reason: props.reason,
-                    candidateCount: props.candidateCount,
-                    queryTokenCount: props.queryTokenCount,
-                    errorClass: props.errorClass,
-                    testRunId: process.env.NATIVELY_TELEMETRY_TEST_RUN_ID || undefined,
-                },
-            });
-        } catch {
-            // Never block retrieval.
+        for (const [fileId, entry] of byFile) {
+            if (entry.seen === entry.chunkCount && entry.embedded === entry.chunkCount) {
+                this.updateIndexState(fileId, entry.hash, entry.chunkCount, embeddingSpace);
+            }
         }
     }
 
@@ -459,30 +479,22 @@ export class ModeHybridRetriever {
             : MIN_COMBINED_SCORE * Math.min(1, queryWords.size / 5);
 
         let candidates: ChunkCandidate[] = [];
+        let usedFallback = false;
+        let usedHybrid = false;
 
         // Try hybrid retrieval first, fall back to lexical-only
         if (this.isEmbeddingAvailable()) {
             try {
                 candidates = await this.performHybridRetrieval(allCandidates, queryWords, queryText, adaptiveThreshold);
+                usedHybrid = true;
             } catch (error) {
                 console.warn('[ModeHybridRetriever] Hybrid retrieval failed, falling back to lexical:', error);
-                this.emitFallbackTelemetry({
-                    reason: 'hybrid_threw',
-                    candidateCount: allCandidates.length,
-                    queryTokenCount: queryWords.size,
-                    modeId: params.modeId,
-                    errorClass: error instanceof Error ? error.constructor.name : typeof error,
-                });
+                usedFallback = true;
                 candidates = this.performLexicalRetrieval(allCandidates, queryWords, adaptiveThreshold);
             }
         } else {
             console.warn('[ModeHybridRetriever] Embedding provider unavailable, using lexical fallback');
-            this.emitFallbackTelemetry({
-                reason: 'embedding_unavailable',
-                candidateCount: allCandidates.length,
-                queryTokenCount: queryWords.size,
-                modeId: params.modeId,
-            });
+            usedFallback = true;
             candidates = this.performLexicalRetrieval(allCandidates, queryWords, adaptiveThreshold);
         }
 
@@ -514,8 +526,8 @@ export class ModeHybridRetriever {
                 trustLevel: 'untrusted_reference'
             })),
             formattedContext,
-            usedFallback: !this.isEmbeddingAvailable(),
-            usedHybrid: this.isEmbeddingAvailable()
+            usedFallback,
+            usedHybrid
         };
     }
 
@@ -536,46 +548,20 @@ export class ModeHybridRetriever {
             throw new Error('Query embedding failed: ' + error);
         }
 
-        // Embed all chunks via the provider's batch endpoint. Providers with
-        // a native batch API (OpenAI, Gemini) return all embeddings in one
-        // round-trip; providers without (local Whisper) implement batch as
-        // Promise.all(embed) so we still get concurrency. Either way this
-        // replaces the previous sequential `for await` loop that did one
-        // network round-trip per chunk — historically the dominant cost on
-        // cold-start (~150ms × N chunks for OpenAI). See FINDING-003.
-        const chunkTexts = candidates.map(c => c.text);
-        let chunkEmbeddings: number[][];
+        const activeSpace = typeof (this.embeddingPipeline as any).getActiveSpaceKey === 'function'
+            ? (this.embeddingPipeline as any).getActiveSpaceKey()
+            : undefined;
+        const activeProvider = typeof (this.embeddingPipeline as any).getActiveProviderName === 'function'
+            ? (this.embeddingPipeline as any).getActiveProviderName()
+            : 'local';
+        const activeDimensions = typeof (this.embeddingPipeline as any).getActiveDimensions === 'function'
+            ? (this.embeddingPipeline as any).getActiveDimensions()
+            : undefined;
+        const embeddingSpace = activeSpace ?? `${activeProvider ?? 'local'}:${queryEmbedding.length}`;
+        const dimensions = activeDimensions ?? queryEmbedding.length;
 
-        try {
-            if (typeof (this.embeddingPipeline as any).getEmbeddings === 'function') {
-                chunkEmbeddings = await (this.embeddingPipeline as any).getEmbeddings(chunkTexts);
-            } else {
-                // Backwards compat for older test/mocked pipelines that only
-                // implement getEmbedding. Run them in parallel rather than
-                // sequentially so we still avoid the per-chunk serial cost.
-                chunkEmbeddings = await Promise.all(
-                    chunkTexts.map(text => this.embeddingPipeline.getEmbedding(text))
-                );
-            }
-            // Defensive: provider must return the same number of vectors as
-            // texts we passed in. Mismatch means a buggy provider — fall
-            // through to a lexical-only path by leaving chunkEmbeddings
-            // sparse and letting computeVectorScore handle the gap.
-            if (!Array.isArray(chunkEmbeddings) || chunkEmbeddings.length !== chunkTexts.length) {
-                console.warn(`[ModeHybridRetriever] Batch embed returned ${chunkEmbeddings?.length ?? 'undefined'} vectors for ${chunkTexts.length} chunks; vector path will be partially lexical-only.`);
-                chunkEmbeddings = chunkEmbeddings ?? [];
-            }
-        } catch (error) {
-            // Pre-FIX-003 the sequential loop swallowed one bad chunk and
-            // carried on. The batch path's "all or nothing" semantics turned
-            // that into a hard failure that bubbled up to retrieve() and
-            // dropped the entire mode to lexical-only. Restore the previous
-            // graceful-degradation contract: log + treat as a fully-empty
-            // embedding set so each chunk's vectorScore is 0, then let FTS
-            // carry the relevance signal. See FINDING-003 in BUGFIX_LOG.
-            console.warn(`[ModeHybridRetriever] Batch embed failed (${error instanceof Error ? error.message : String(error)}); degrading to lexical-only for this query.`);
-            chunkEmbeddings = [];
-        }
+        const chunkEmbeddings: Array<number[] | null> = new Array(candidates.length).fill(null);
+        await this.ensureCandidateEmbeddings(candidates, embeddingSpace, dimensions, chunkEmbeddings);
 
         // Compute combined scores
         const scored: ChunkCandidate[] = [];
@@ -598,6 +584,65 @@ export class ModeHybridRetriever {
             const combined = this.combinedScore(c.ftsScore, c.vectorScore, FTS_WEIGHT);
             return combined >= minScore;
         });
+    }
+
+    private async ensureCandidateEmbeddings(
+        candidates: ChunkCandidate[],
+        embeddingSpace: string,
+        dimensions: number,
+        chunkEmbeddings?: Array<number[] | null>,
+    ): Promise<Array<number[] | null>> {
+        const embeddings = chunkEmbeddings ?? new Array<number[] | null>(candidates.length).fill(null);
+        const missingIndices: number[] = [];
+        for (let i = 0; i < candidates.length; i++) {
+            const cached = this.loadCachedChunkEmbedding(candidates[i], embeddingSpace, dimensions);
+            if (cached) {
+                embeddings[i] = cached;
+            } else {
+                missingIndices.push(i);
+            }
+        }
+
+        try {
+            if (missingIndices.length > 0) {
+                const missingTexts = missingIndices.map(index => candidates[index].text);
+                let freshEmbeddings: number[][];
+                if (typeof (this.embeddingPipeline as any).getEmbeddings === 'function') {
+                    freshEmbeddings = await (this.embeddingPipeline as any).getEmbeddings(missingTexts);
+                } else {
+                    // Backwards compat for older test/mocked pipelines that only
+                    // implement getEmbedding. Run them in parallel rather than
+                    // sequentially so we still avoid the per-chunk serial cost.
+                    freshEmbeddings = await Promise.all(
+                        missingTexts.map(text => this.embeddingPipeline.getEmbedding(text))
+                    );
+                }
+                // Defensive: provider must return the same number of vectors as
+                // texts we passed in. Mismatch means a buggy provider — keep any
+                // cached vectors and let FTS carry the missing ones.
+                if (!Array.isArray(freshEmbeddings) || freshEmbeddings.length !== missingTexts.length) {
+                    console.warn(`[ModeHybridRetriever] Batch embed returned ${freshEmbeddings?.length ?? 'undefined'} vectors for ${missingTexts.length} chunks; vector path will be partially lexical-only.`);
+                    freshEmbeddings = [];
+                }
+                freshEmbeddings.forEach((embedding, freshIndex) => {
+                    const candidateIndex = missingIndices[freshIndex];
+                    if (candidateIndex === undefined || !Array.isArray(embedding)) return;
+                    embeddings[candidateIndex] = embedding;
+                    this.storeCachedChunkEmbedding(candidates[candidateIndex], embeddingSpace, dimensions, embedding);
+                });
+            }
+        } catch (error) {
+            // Pre-FIX-003 the sequential loop swallowed one bad chunk and
+            // carried on. The batch path's "all or nothing" semantics turned
+            // that into a hard failure that bubbled up to retrieve() and
+            // dropped the entire mode to lexical-only. Restore the previous
+            // graceful-degradation contract: log + treat missing embeddings as
+            // vectorScore=0, then let FTS carry the relevance signal.
+            console.warn(`[ModeHybridRetriever] Batch embed failed (${error instanceof Error ? error.message : String(error)}); degrading to lexical-only for this query.`);
+        }
+
+        this.updateFullyCachedIndexState(candidates, embeddings, embeddingSpace);
+        return embeddings;
     }
 
     /**
@@ -710,7 +755,8 @@ export class ModeHybridRetriever {
         if (!state) return true;  // Never indexed
 
         const currentHash = hashContent(file.content);
-        return state.fileHash !== currentHash;
+        const activeSpace = this.embeddingPipeline.getActiveSpaceKey() ?? null;
+        return state.fileHash !== currentHash || state.embeddingSpace !== activeSpace;
     }
 
     /**
@@ -719,7 +765,38 @@ export class ModeHybridRetriever {
     markIndexed(file: ModeReferenceFile): void {
         const contentHash = hashContent(file.content);
         const chunks = this.chunkText(file.content);
-        this.updateIndexState(file.id, contentHash, chunks.length);
+        this.updateIndexState(file.id, contentHash, chunks.length, this.embeddingPipeline.getActiveSpaceKey());
+    }
+
+    /**
+     * Eagerly chunk + embed reference files for the active embedding space.
+     * This is the standard vector-DB flow used after upload and after model
+     * switches: documents are indexed once, queries only embed the question.
+     */
+    async indexReferenceFiles(files: ModeReferenceFile[]): Promise<{ indexedFiles: number; embeddedChunks: number; embeddingSpace?: string }> {
+        if (!this.isEmbeddingAvailable()) {
+            console.warn('[ModeHybridRetriever] Cannot index reference files: embedding provider unavailable');
+            return { indexedFiles: 0, embeddedChunks: 0 };
+        }
+
+        const embeddingSpace = this.embeddingPipeline.getActiveSpaceKey();
+        const dimensions = this.embeddingPipeline.getActiveDimensions();
+        if (!embeddingSpace || !dimensions) {
+            console.warn('[ModeHybridRetriever] Cannot index reference files: embedding space unavailable');
+            return { indexedFiles: 0, embeddedChunks: 0 };
+        }
+
+        const candidates = this.getModeFileChunks(files);
+        if (candidates.length === 0) {
+            return { indexedFiles: 0, embeddedChunks: 0, embeddingSpace };
+        }
+
+        const beforeMissing = candidates.filter(candidate =>
+            !this.loadCachedChunkEmbedding(candidate, embeddingSpace, dimensions)
+        ).length;
+        await this.ensureCandidateEmbeddings(candidates, embeddingSpace, dimensions);
+        const indexedFiles = new Set(candidates.map(candidate => candidate.sourceId)).size;
+        return { indexedFiles, embeddedChunks: beforeMissing, embeddingSpace };
     }
 
     /**
@@ -736,12 +813,13 @@ export class ModeHybridRetriever {
         const stats = new Map<string, ModeReferenceIndexState>();
         try {
             const rows = this.db.prepare(
-                'SELECT file_id, file_hash, indexed_at, chunk_count FROM mode_reference_index_state'
+                'SELECT file_id, file_hash, embedding_space, indexed_at, chunk_count FROM mode_reference_index_state'
             ).all() as any[];
             for (const row of rows) {
                 stats.set(row.file_id, {
                     fileId: row.file_id,
                     fileHash: row.file_hash,
+                    embeddingSpace: row.embedding_space ?? null,
                     indexedAt: row.indexed_at,
                     chunkCount: row.chunk_count
                 });

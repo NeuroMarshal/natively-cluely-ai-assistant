@@ -89,7 +89,7 @@ Natively started as a pixel-perfect recreation of Cluely's interface — then ke
 While other tools act as simple API wrappers, Natively is a complete, native intelligence system designed specifically for high-stakes meetings and interviews.
 
 - **Native Audio Capture (<500ms):** Built with Rust and Zero-Copy ABI transfers, bypassing generic web-audio limitations for ultra-low latency.
-- **Local Whisper STT (On-Device):** 100% on-device speech-to-text using optimized ONNX models (Moonshine-tiny, Moonshine-base, Whisper-large-v3-turbo, distil-large-v3). Uses hardware acceleration (CoreML/Metal GPU on Apple Silicon, DirectML on Windows, quantized int8 on CPU) with zero cloud fees or data exposure.
+- **Local Whisper STT (On-Device):** 100% on-device speech-to-text using optimized ONNX models (Moonshine-tiny, Moonshine-base, Whisper-large-v3-turbo, distil-large-v3). Uses ONNX Runtime WebGPU acceleration through Dawn (D3D12/Metal/Vulkan) with CPU fallback and zero cloud fees or data exposure.
 - **Dual-Channel Intelligence:** Distinct pipelines for system audio (what they say) and your microphone (what you dictate) ensuring perfect transcription without room noise.
 - **Battle-Tested Stealth Mode:** Completely undetectable. Hides from the dock, disables popups, and disguises the process during screen sharing.
 - **Modes Manager (7 Personas):** Toggle between 7 tailored personas (General, Technical Interview, Looking for Work, Sales, Recruiting, Team Meet, and Lecture) with custom system prompts and dynamic meeting-note templates.
@@ -104,7 +104,7 @@ While other tools act as simple API wrappers, Natively is a complete, native int
 
 ## 3 things you should know before choosing an interview AI
 
-1. **Cluely** had a data breach in mid-2025 that exposed 83,000 users' personal info, transcripts, and screenshots — Natively stores everything locally by default with limited anonymous telemetry and has never had a breach.
+1. **Cluely** had a data breach in mid-2025 that exposed 83,000 users' personal info, transcripts, and screenshots — Natively stores everything locally by default with no usage tracking and has never had a breach.
 2. **Final Round AI** costs $149/month and its taskbar icon is visible to proctoring software — Natively is free, open-source, and has a battle-tested undetectable stealth mode.
 3. **LockedIn AI** charges $55–70/month and locks you into their cloud LLM with no local option — Natively lets you use any model (GPT, Claude, Gemini, Llama) or go fully offline with Ollama.
 
@@ -154,9 +154,9 @@ This demo shows **a complete live meeting scenario**:
 | **Screenshot OCR**        | ✅ Yes                     | ⚠️ Limited           | ❌         | ✅ Yes           | ⚠️ Limited             |
 | **Stealth mode**          | ✅ Undetectable            | ❌                   | ❌         | ❌               | ❌ Visible to proctors |
 | **Process Disguise**      | ✅ Terminal, Settings, etc | ❌                   | ❌         | ❌               | ❌                     |
-| **Resume & context**      | ✅ Pro                     | ❌                   | ❌         | ✅ Yes           | ✅ Yes                 |
-| **Custom Personas/Modes** | ✅ Pro                     | ✅ Yes               | ❌         | ❌               | ⚠️ Limited             |
-| **Custom Context & Notes**| ✅ Pro                     | ❌                   | ❌         | ❌               | ❌                     |
+| **Resume & context**      | ✅ Yes                     | ❌                   | ❌         | ✅ Yes           | ✅ Yes                 |
+| **Custom Personas/Modes** | ✅ Yes                     | ✅ Yes               | ❌         | ❌               | ⚠️ Limited             |
+| **Custom Context & Notes**| ✅ Yes                     | ❌                   | ❌         | ❌               | ❌                     |
 | **Multi-Key API Pools**   | ✅ Yes                     | ❌                   | ❌         | ❌               | ❌                     |
 | **Profile Intel Router**  | ✅ Yes                     | ❌                   | ❌         | ❌               | ❌                     |
 | **Eager Code Expansion**  | ✅ Yes                     | ❌                   | ❌         | ❌               | ❌                     |
@@ -182,7 +182,7 @@ The UI is intentionally familiar — if you've used Cluely, there's zero learnin
 
 Cluely's mid-2025 data breach exposed personal information, full interview transcripts, and screenshots of 83,000 users. Every word spoken during an interview was stored on their servers — and then leaked. They charge $20/month for this privilege.
 
-By default, Natively stores everything on your local machine, with only limited anonymous telemetry (basic GA4 install tracking, zero personal data). Your transcripts, API keys, and screenshots never leave your machine when using your own keys. The entire codebase is open-source (AGPL-3.0) and auditable. Zero breaches — that is the only acceptable standard for a tool that listens to your interviews.
+By default, Natively stores everything on your local machine and does not include usage tracking. Your transcripts, API keys, and screenshots never leave your machine when using your own keys. The entire codebase is open-source (AGPL-3.0) and auditable. Zero breaches — that is the only acceptable standard for a tool that listens to your interviews.
 
 Unlike Cluely's rigid interface, Natively also gives you complete control over the AI: **Custom Persona Modes** (Tech, Sales, Recruiting) to strictly format behavior, and **Reference Files** capabilities to upload PDFs so the AI knows exactly the context of the job or meeting before it starts.
 
@@ -383,7 +383,7 @@ All while remaining **invisible, fast, and privacy-first**.
 - Bring Your Own Keys (BYOK)
 - Local AI option (Ollama)
 - All data stored locally
-- Limited anonymous telemetry (basic GA4 counts)
+- No usage tracking
 - No user data tracking
 - No hidden uploads
 
@@ -591,7 +591,7 @@ This runs: Vite build → TypeScript compile → native module build → electro
 - Multiple screenshot support for multi-part problems
 - Smart fallback to Groq Llama 4 Scout if primary vision model fails
 
-### Premium Profile Intelligence
+### Local Profile Intelligence
 
 - **Profile Intelligence Router (v2)**: Seamlessly categorizes user questions into distinct domains (Coding, System Design, Behavioral, Negotiation) to apply the most optimal reasoning path.
 - **Answer-Type Constraints & Follow-Up Resolver**: Contextually tracks conversations to answer subsequent queries, and enforces precise layout constraints (such as short, conversational, bulleted, or code-only responses).
@@ -835,7 +835,7 @@ Yes. Natively uses a Rust-based system audio capture that works universally acro
 
 #### Is my data safe?
 
-Natively is built on **Privacy-by-Design**. By default, all transcripts, vector embeddings (Local RAG), and keys are stored locally on your machine. We collect only limited anonymous telemetry (no personal user data).
+Natively is built on **Privacy-by-Design**. By default, all transcripts, vector embeddings (Local RAG), and keys are stored locally on your machine. The desktop app does not collect usage data.
 
 #### Can I use it for technical interviews?
 

@@ -88,8 +88,6 @@ function makeFakeMic(deviceId) {
 }
 
 const fakeNativeModule = {
-    getHardwareId: () => 'fake',
-    verifyGumroadKey: async () => 'fake',
     getInputDevices: () => [],
     getOutputDevices: () => [],
     SystemAudioCapture: function (d) { return makeFakeMic('sys:' + (d || 'default')); },

@@ -34,7 +34,7 @@ function generateTranscript(corrected) {
   lines.push('Sarah: I will own the launch checklist and deliver it by Friday.');
   for (let i = 4; i <= 20; i++) lines.push(`Alice: ack on turn ${i}.`);
   // turns 21-60: drift
-  for (let i = 21; i <= 60; i++) lines.push(`drift line about audio bug ${i} on telemetry pipeline.`);
+  for (let i = 21; i <= 60; i++) lines.push(`drift line about audio bug ${i} on capture pipeline.`);
   // turn 61: correction
   if (corrected) {
     lines.push(`Sarah: actually I need to push the launch checklist to Monday instead of Friday.`);

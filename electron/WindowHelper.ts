@@ -336,6 +336,20 @@ export class WindowHelper {
 
     this.launcherWindow.setContentProtection(this.contentProtection);
 
+    let startupShown = false;
+    const showLauncherAfterLoad = (eventName: string) => {
+      if (startupShown || !this.launcherWindow || this.launcherWindow.isDestroyed()) return;
+      startupShown = true;
+      console.log(`[WindowHelper] Launcher startup ready via ${eventName}`);
+      this.switchToLauncher();
+      this.isWindowVisible = true;
+    };
+
+    this.launcherWindow.once('ready-to-show', () => showLauncherAfterLoad('ready-to-show'));
+    this.launcherWindow.webContents.once('did-finish-load', () =>
+      showLauncherAfterLoad('did-finish-load'),
+    );
+
     this.launcherWindow
       .loadURL(`${startUrl}?window=launcher`)
       .then(() => console.log('[WindowHelper] loadURL success'))
@@ -465,12 +479,6 @@ export class WindowHelper {
 
     this.overlayWindow.loadURL(`${startUrl}?window=overlay`).catch((e) => {
       console.error('[WindowHelper] Failed to load Overlay URL:', e);
-    });
-
-    // --- 3. Startup Sequence ---
-    this.launcherWindow.once('ready-to-show', () => {
-      this.switchToLauncher();
-      this.isWindowVisible = true;
     });
 
     this.setupWindowListeners();
