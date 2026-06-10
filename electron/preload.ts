@@ -1020,6 +1020,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   setDisguise: (mode: 'terminal' | 'settings' | 'activity' | 'none') =>
     ipcRenderer.invoke('set-disguise', mode),
   getDisguise: () => ipcRenderer.invoke('get-disguise'),
+  setTrayIcon: (preset: 'none' | 'terminal' | 'settings' | 'activity') => ipcRenderer.invoke('set-tray-icon', preset),
+  getTrayIcon: () => ipcRenderer.invoke('get-tray-icon'),
   onDisguiseChanged: (callback: (mode: 'terminal' | 'settings' | 'activity' | 'none') => void) => {
     const subscription = (_: any, mode: any) => callback(mode);
     ipcRenderer.on('disguise-changed', subscription);
