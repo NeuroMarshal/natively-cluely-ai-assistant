@@ -1,5 +1,10 @@
 // removed unused anyhow::Result
 
+pub mod error;
+pub use error::{
+    anyhow_to_napi, code_from_anyhow, se, SystemAudioErrorCode,
+};
+
 #[cfg(target_os = "macos")]
 mod core_audio;
 #[cfg(target_os = "macos")]
@@ -26,24 +31,36 @@ pub use windows::SpeakerStream;
 #[cfg(target_os = "windows")]
 pub use windows::default_output_device_uid;
 
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+// Linux system-audio capture (PulseAudio monitor loopback). Adapted from
+// DeusMos's PR #278 (Natively-AI-assistant/...#278), AGPL-3.0.
+#[cfg(target_os = "linux")]
+pub mod linux;
+#[cfg(target_os = "linux")]
+pub use linux::list_output_devices;
+#[cfg(target_os = "linux")]
+pub use linux::SpeakerInput;
+#[cfg(target_os = "linux")]
+pub use linux::SpeakerStream;
+#[cfg(target_os = "linux")]
+pub use linux::default_output_device_uid;
+
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 pub mod fallback {
-    // Stub implementation for Linux (and any other unsupported platform).
-    // The system-audio capture pipeline is macOS/Windows only — `new()` always
-    // returns an error, so `stream()` / `pause()` etc. are never reached at
-    // runtime. These stubs exist only so the rest of the crate (lib.rs) still
-    // type-checks on Linux instead of failing with E0599 on `.stream()` calls.
-    // See issue #219.
+    // Stub implementation for any platform without a native system-audio
+    // backend. `new()` always returns an error, so `stream()` / `pause()` etc.
+    // are never reached at runtime. These stubs exist only so the rest of the
+    // crate (lib.rs) still type-checks instead of failing with E0599 on
+    // `.stream()` calls. See issue #219.
     use anyhow::Result;
     use ringbuf::HeapCons;
     pub struct SpeakerInput;
     pub struct SpeakerStream;
     impl SpeakerInput {
         pub fn new(_device_id: Option<String>) -> Result<Self> {
-            Err(anyhow::anyhow!("Unsupported platform: system audio capture is implemented for macOS and Windows only"))
+            Err(crate::speaker::se(crate::speaker::SystemAudioErrorCode::UnsupportedPlatform))
         }
         pub fn stream(self) -> Result<SpeakerStream> {
-            Err(anyhow::anyhow!("Unsupported platform"))
+            Err(crate::speaker::se(crate::speaker::SystemAudioErrorCode::UnsupportedPlatform))
         }
         pub fn sample_rate(&self) -> u32 {
             unreachable!("SpeakerInput::new() always errors on this platform")
@@ -78,11 +95,11 @@ pub mod fallback {
         String::new()
     }
 }
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 pub use fallback::list_output_devices;
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 pub use fallback::SpeakerInput;
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 pub use fallback::SpeakerStream;
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 pub use fallback::default_output_device_uid;
