@@ -449,6 +449,7 @@ import { setVerboseLoggingFlag } from "./verboseLog"
 import { ReleaseNotesManager } from "./update/ReleaseNotesManager"
 import { OllamaManager } from './services/OllamaManager'
 import { decideToggle, decideDockTransition } from './services/toggleStateReducer'
+import { resolveTrayIconPath, trayIconDisplayName, isTrayIconPreset, type TrayIconPreset } from './services/trayIconPreset'
 
 export class AppState {
   private static instance: AppState | null = null
@@ -470,6 +471,7 @@ export class AppState {
   private updateDownloadPromise: Promise<unknown> | null = null
   private downloadedUpdateInfo: any = null
   private disguiseMode: 'terminal' | 'settings' | 'activity' | 'none' = 'none'
+  private trayIcon: TrayIconPreset = 'none'
 
   // View management
   private view: "queue" | "solutions" = "queue"
@@ -553,6 +555,7 @@ export class AppState {
     const settingsManager = SettingsManager.getInstance();
     this.isUndetectable = settingsManager.get('isUndetectable') ?? false;
     this.disguiseMode = settingsManager.get('disguiseMode') ?? 'none';
+    this.trayIcon = (settingsManager.get('trayIcon') as TrayIconPreset | undefined) ?? 'none';
     this._verboseLogging = settingsManager.get('verboseLogging') ?? false;
     setVerboseLoggingFlag(this._verboseLogging);
     console.log(`[AppState] Initialized with isUndetectable=${this.isUndetectable}, disguiseMode=${this.disguiseMode}, verboseLogging=${this._verboseLogging}`);
@@ -4643,51 +4646,77 @@ export class AppState {
     this.showTray();
   }
 
-  public showTray(): void {
-    if (this.tray) return;
-
-    // Try to find a template image first for macOS
+  private resolveDefaultTrayIconPath(): string {
     const resourcesPath = app.isPackaged ? process.resourcesPath : app.getAppPath();
-
-    // Potential paths for tray icon
     const templatePath = path.join(resourcesPath, 'assets', 'iconTemplate.png');
     const defaultIconPath = app.isPackaged
       ? path.join(resourcesPath, 'src/components/icon.png')
       : path.join(app.getAppPath(), 'src/components/icon.png');
-
-    let iconToUse = defaultIconPath;
-
-    // Check if template exists (sync check is fine for startup/rare toggle)
     try {
       if (require('fs').existsSync(templatePath)) {
-        iconToUse = templatePath;
         console.log('[Tray] Using template icon:', templatePath);
-      } else {
-        // Also check src/components for dev
-        const devTemplatePath = path.join(app.getAppPath(), 'src/components/iconTemplate.png');
-        if (require('fs').existsSync(devTemplatePath)) {
-          iconToUse = devTemplatePath;
-          console.log('[Tray] Using dev template icon:', devTemplatePath);
-        } else {
-          console.log('[Tray] Template icon not found, using default:', defaultIconPath);
-        }
+        return templatePath;
       }
+      const devTemplatePath = path.join(app.getAppPath(), 'src/components/iconTemplate.png');
+      if (require('fs').existsSync(devTemplatePath)) {
+        console.log('[Tray] Using dev template icon:', devTemplatePath);
+        return devTemplatePath;
+      }
+      console.log('[Tray] Template icon not found, using default:', defaultIconPath);
     } catch (e) {
       console.error('[Tray] Error checking for icon:', e);
     }
+    return defaultIconPath;
+  }
 
+  public showTray(): void {
+    if (this.tray) return;
+
+    const iconToUse = this.resolveDefaultTrayIconPath();
     const trayIcon = nativeImage.createFromPath(iconToUse).resize({ width: 16, height: 16 });
-    // IMPORTANT: specific template settings for macOS if needed, but 'Template' in name usually suffices
     trayIcon.setTemplateImage(iconToUse.endsWith('Template.png'));
 
-    this.tray = new Tray(trayIcon)
-    this.tray.setToolTip('Natively') // This tooltip might also need update if we change global shortcut, but global shortcut is removed.
+    this.tray = new Tray(trayIcon);
+    this.tray.setToolTip('Natively');
     this.updateTrayMenu();
 
-    // Double-click to show window
     this.tray.on('double-click', () => {
-      this.centerAndShowWindow()
-    })
+      this.centerAndShowWindow();
+    });
+
+    // Apply the current disguise preset to the freshly-created tray.
+    this.applyTrayIcon();
+  }
+
+  private applyTrayIcon(): void {
+    if (!this.tray) return;
+    const resourcesPath = app.isPackaged ? process.resourcesPath : app.getAppPath();
+    const assetsDir = path.join(resourcesPath, 'assets');
+    const defaultTrayIconPath = this.resolveDefaultTrayIconPath();
+    const iconPath = resolveTrayIconPath(this.trayIcon, { assetsDir, defaultTrayIconPath });
+
+    let image = nativeImage.createFromPath(iconPath).resize({ width: 16, height: 16 });
+    if (image.isEmpty()) {
+      console.warn(`[Tray] Disguise icon failed to load (${iconPath}); falling back to default.`);
+      image = nativeImage.createFromPath(defaultTrayIconPath).resize({ width: 16, height: 16 });
+    }
+    // Presets are colorful app icons, never monochrome templates. Only the real
+    // icon keeps macOS template behavior when its filename signals it.
+    image.setTemplateImage(this.trayIcon === 'none' && defaultTrayIconPath.endsWith('Template.png'));
+
+    this.tray.setImage(image);
+    this.tray.setToolTip(trayIconDisplayName(this.trayIcon));
+  }
+
+  public setTrayIcon(preset: TrayIconPreset): void {
+    if (!isTrayIconPreset(preset)) return;
+    this.trayIcon = preset;
+    SettingsManager.getInstance().set('trayIcon', preset);
+    this.applyTrayIcon();
+  }
+
+  public getTrayIcon(): TrayIconPreset {
+    return this.trayIcon;
   }
 
   public updateTrayMenu() {
@@ -4698,8 +4727,9 @@ export class AppState {
 
     console.log('[Main] updateTrayMenu called. Screenshot Accelerator:', screenshotAccel);
 
-    // Update tooltip for verification
-    this.tray.setToolTip('Natively');
+    // Tooltip must reflect the active tray-icon disguise preset; otherwise
+    // rebuilding the menu (e.g. on keybind change) clobbers it back to 'Natively'.
+    this.tray.setToolTip(trayIconDisplayName(this.trayIcon));
 
     // Helper to format accelerator for display (e.g. CommandOrControl+H -> Cmd+H)
     const formatAccel = (accel: string) => {
