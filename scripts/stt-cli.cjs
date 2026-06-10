@@ -110,9 +110,14 @@ stt.start();
 log('started — feeding audio in 100ms chunks (real-time pace)...');
 
 const CHUNK_BYTES = Math.round(rate * 0.1) * 2; // 100ms of int16 mono
+// Append ~700ms of trailing silence so the VAD sees a real end-of-speech pause
+// (lets the final streaming tick capture the last words + closes naturally),
+// matching how a real speaker stops — instead of cutting the audio dead.
+const TRAIL_SILENCE = Buffer.alloc(Math.round(rate * 0.7) * 2);
+const fed = Buffer.concat([pcm, TRAIL_SILENCE]);
 let off = 0;
 const iv = setInterval(() => {
-  if (off >= pcm.length) {
+  if (off >= fed.length) {
     clearInterval(iv);
     log('--- audio exhausted; finalize() ---');
     stt.finalize();
@@ -128,6 +133,6 @@ const iv = setInterval(() => {
     }, 1500);
     return;
   }
-  stt.write(pcm.subarray(off, off + CHUNK_BYTES));
+  stt.write(fed.subarray(off, off + CHUNK_BYTES));
   off += CHUNK_BYTES;
 }, 100);

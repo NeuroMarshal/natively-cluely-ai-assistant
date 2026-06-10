@@ -442,7 +442,6 @@ export class ModesManager {
      */
     private static readonly MAX_FILE_CHARS = 12_000;
     private static readonly MAX_TOTAL_CHARS = 40_000;
-    public static readonly MAX_DIRECT_CONTEXT_CHARS = 12_000;
 
     public buildActiveModeDirectContextBlock(answerType?: AnswerType): string {
         const mode = this.getActiveMode();
@@ -456,7 +455,7 @@ export class ModesManager {
 
         return `<active_mode_direct_context format="json">\n${encodeModeContextPayload({
             mode: mode.name,
-            content: directContext.slice(0, ModesManager.MAX_DIRECT_CONTEXT_CHARS),
+            content: directContext,
         })}\n</active_mode_direct_context>`;
     }
 

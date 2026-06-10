@@ -137,6 +137,12 @@ export class LocalWhisperSTT extends EventEmitter {
     private lastEmittedText = '';
     private streamingTaskInFlight = false;
     private streamingTaskId: string | null = null;
+    // When a segment closes while a streaming pass is in-flight, that pass
+    // already covers (nearly) the whole segment — promote ITS result to the
+    // final when it arrives instead of the stale last partial (slow models lag
+    // a word or two behind their last completed partial).
+    private promoteTaskIdToFinal: string | null = null;
+    private promoteSegmentOpenedAt = 0;
 
     constructor(modelId: string) {
         super();
@@ -169,13 +175,17 @@ export class LocalWhisperSTT extends EventEmitter {
      * partials directly without LocalAgreement-2's two-pass confirmation.
      */
     private static resolveStreamingProfile(modelId: string): { intervalMs: number; minAudioMs: number; skipAgreement: boolean } {
-        // Loose match — covers `onnx-community/moonshine-*`, `usefulsensors/
-        // moonshine-*`, and any future fork that keeps "moonshine" in the
-        // path. Falls back to Whisper-safe defaults on no match.
+        // Aggressive near-real-time profile: poll often, dispatch on a short
+        // audio window, and emit every partial DIRECTLY (skipAgreement) so text
+        // appears as the speaker talks instead of waiting for LocalAgreement-2's
+        // two-pass confirmation. Non-monotonic partials are fine — the rolling
+        // transcript REPLACES the in-progress tail (it never appends), so a
+        // revised word just rewrites live. Whisper is a touch slower per pass
+        // than Moonshine, so it dispatches on a slightly larger window.
         if (modelId.toLowerCase().includes('moonshine')) {
-            return { intervalMs: 500, minAudioMs: 300, skipAgreement: true };
+            return { intervalMs: 300, minAudioMs: 200, skipAgreement: true };
         }
-        return { intervalMs: 1000, minAudioMs: 600, skipAgreement: false };
+        return { intervalMs: 400, minAudioMs: 300, skipAgreement: true };
     }
 
     setSampleRate(rate: number): void { this.inputSampleRate = rate; }
@@ -526,11 +536,50 @@ export class LocalWhisperSTT extends EventEmitter {
     private dispatchFinal(audio: Float32Array): void {
         if (!this.worker) return;
 
-        // A final pass closes the streaming window — clear agreement state so
-        // the next segment starts clean.
+        // NEAR-REAL-TIME FINAL: the streaming loop already transcribed this
+        // segment, so re-running a full, slow final inference over the whole
+        // segment (the ~5s the user felt) is wasteful. Two cases:
+        //
+        //  (a) A streaming pass is IN-FLIGHT — it was dispatched on the
+        //      near-complete segment, so it captures the trailing words the
+        //      last completed partial hasn't caught up to yet (matters for slow
+        //      models). Promote ITS result when it returns, at no extra cost.
+        //      stop() clears the in-flight state first, so this only runs while
+        //      active.
+        if (this.streamingTaskInFlight && this.streamingTaskId) {
+            this.promoteTaskIdToFinal = this.streamingTaskId;
+            this.promoteSegmentOpenedAt = this.segmentOpenedAt;
+            this.segmentOpenedAt = 0;
+            return;
+        }
+
+        //  (b) Nothing in-flight — the latest partial already covers the segment
+        //      (typical of fast streaming models). Promote it instantly
+        //      (latency ≈ the VAD pause, ~300ms). Capture it BEFORE reset.
+        const streamed = (this.lastPartialText || this.lastEmittedText).trim();
+
         this.resetAgreementState();
         this.streamingTaskInFlight = false;
 
+        if (streamed) {
+            const text = filterHallucination(streamed);
+            if (text) {
+                if (this.segmentOpenedAt > 0) {
+                    const dt = performance.now() - this.segmentOpenedAt;
+                    if (dt > 0 && dt < LocalWhisperSTT.LATENCY_MAX_MS) {
+                        this.recordLatency(this.finalLatencies, dt);
+                    }
+                }
+                this.emit('transcript', { text, isFinal: true, confidence: 0.9 });
+            }
+            this.segmentOpenedAt = 0;
+            // The instant final needs no worker round-trip; stop()/drain handles
+            // worker teardown itself once flushing completes.
+            return;
+        }
+
+        // No streamed partial — a very short utterance that closed before the
+        // first partial. Run a quick final inference so it isn't lost.
         if (!this.workerReady) {
             const MAX_PENDING = 500;
             if (this.pendingAudio.length < MAX_PENDING) {
@@ -543,9 +592,6 @@ export class LocalWhisperSTT extends EventEmitter {
             return;
         }
 
-        if (this.isDrainingFinals) {
-            this.drainingFinalsInFlight++;
-        }
         this.sendTranscribe(audio, false);
     }
 
@@ -721,6 +767,31 @@ export class LocalWhisperSTT extends EventEmitter {
                 return;
             }
 
+            // An in-flight streaming pass promoted to the final on segment close
+            // (see dispatchFinal). Handle it BEFORE the active/finalized guards:
+            // its taskId no longer matches streamingTaskId, but it carries the
+            // complete segment transcript and must be emitted as the final.
+            if (msg.type === 'partial' && this.promoteTaskIdToFinal && msg.taskId === this.promoteTaskIdToFinal) {
+                this.promoteTaskIdToFinal = null;
+                this.streamingTaskInFlight = false;
+                const openedAt = this.promoteSegmentOpenedAt;
+                this.promoteSegmentOpenedAt = 0;
+                this.resetAgreementState();
+                if (this.isActive || this.isDrainingFinals) {
+                    const finalText = filterHallucination(msg.text);
+                    if (finalText) {
+                        if (openedAt > 0) {
+                            const dt = performance.now() - openedAt;
+                            if (dt > 0 && dt < LocalWhisperSTT.LATENCY_MAX_MS) {
+                                this.recordLatency(this.finalLatencies, dt);
+                            }
+                        }
+                        this.emit('transcript', { text: finalText, isFinal: true, confidence: 0.9 });
+                    }
+                }
+                return;
+            }
+
             // After stop(), allow only the explicitly flushed final segments to
             // return during the 5s drain window; partials and unrelated worker
             // messages remain ignored on a torn-down instance.
@@ -756,6 +827,19 @@ export class LocalWhisperSTT extends EventEmitter {
                 console.error('[LocalWhisperSTT] Worker error:', msg.message);
                 if (!this.workerReady) this.releaseWorkerInitSlot();
                 this.completeFinalTask(msg.taskId);
+                // A promoted-to-final streaming pass errored — fall back to the
+                // stale last partial so the segment's final isn't lost.
+                if (msg.taskId && msg.taskId === this.promoteTaskIdToFinal) {
+                    this.promoteTaskIdToFinal = null;
+                    this.streamingTaskInFlight = false;
+                    const fallback = filterHallucination((this.lastPartialText || this.lastEmittedText).trim());
+                    this.promoteSegmentOpenedAt = 0;
+                    this.resetAgreementState();
+                    if ((this.isActive || this.isDrainingFinals) && fallback) {
+                        this.emit('transcript', { text: fallback, isFinal: true, confidence: 0.85 });
+                    }
+                    return;
+                }
                 // If the failed task was the in-flight streaming one, unblock
                 // the loop so the next tick can fire.
                 if (msg.taskId && msg.taskId === this.streamingTaskId) {

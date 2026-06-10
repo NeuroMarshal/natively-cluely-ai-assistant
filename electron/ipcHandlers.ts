@@ -802,7 +802,10 @@ export function initializeIpcHandlers(appState: AppState): void {
           let manualSuperseded = false;
           await raceStreamWithDeadline({
             stream: stream as AsyncGenerator<string>,
-            firstUsefulDeadlineMs: firstUsefulDeadlineMs(answerPlan.answerType),
+            // Custom-endpoint models (user proxy) get the relaxed cap: their
+            // TTFT routinely exceeds 3.5s, and aborting then burns tokens
+            // server-side while the UI shows the fallback stub.
+            firstUsefulDeadlineMs: firstUsefulDeadlineMs(answerPlan.answerType, llmHelper.isCurrentModelCustomEndpoint?.() === true),
             isUsefulYet: () => manualFirstUseful,
             shouldAbort: () => {
               if (_chatStreamsBySender.get(senderId)?.streamId !== myStreamId) {
@@ -1721,6 +1724,73 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   });
 
+  safeHandle('set-custom-llm-endpoint', async (_, cfg: { type: 'openai' | 'claude'; baseUrl: string; apiKey: string; model: string; models?: string[] } | null) => {
+    try {
+      const { CredentialsManager } = require('./services/CredentialsManager');
+      const cm = CredentialsManager.getInstance();
+      // Preserve an existing key when the UI sends a masked/blank key on edit.
+      if (cfg && (!cfg.apiKey || /^sk-\.\.\./.test(cfg.apiKey))) {
+        const existing = cm.getCustomLlmEndpoint();
+        if (existing?.apiKey) cfg = { ...cfg, apiKey: existing.apiKey };
+      }
+      cm.setCustomLlmEndpoint(cfg);
+
+      const llmHelper = appState.processingHelper.getLLMHelper();
+      llmHelper.setCustomEndpoint(cm.getCustomLlmEndpoint() ?? null);
+
+      // Re-init the intelligence LLMs so mode-specific helpers pick up the change.
+      appState.getIntelligenceManager().resetEngine();
+      appState.getIntelligenceManager().initializeLLMs();
+
+      // Notify windows so the model selector + settings refresh.
+      BrowserWindow.getAllWindows().forEach((win) => {
+        if (!win.isDestroyed()) win.webContents.send('credentials-changed');
+      });
+      return { success: true };
+    } catch (error: any) {
+      console.error('Error saving custom LLM endpoint:', error);
+      return { success: false, error: error.message };
+    }
+  });
+
+  // Fetch the model list from a custom endpoint (proxy). Uses the passed creds,
+  // falling back to the stored key when the UI sends a blank/masked key.
+  safeHandle('fetch-custom-endpoint-models', async (_, cfg: { type: 'openai' | 'claude'; baseUrl: string; apiKey: string }) => {
+    try {
+      let apiKey = (cfg.apiKey || '').trim();
+      if (!apiKey || apiKey.includes('•') || /^sk-\.\.\./.test(apiKey)) {
+        const { CredentialsManager } = require('./services/CredentialsManager');
+        apiKey = CredentialsManager.getInstance().getCustomLlmEndpoint()?.apiKey || '';
+      }
+      const { fetchCustomEndpointModels } = require('./utils/modelFetcher');
+      const models = await fetchCustomEndpointModels(cfg.type, cfg.baseUrl, apiKey);
+      return { success: true, models };
+    } catch (error: any) {
+      const status = error?.response?.status;
+      return { success: false, error: status ? `HTTP ${status}` : (error.message || 'Fetch failed') };
+    }
+  });
+
+  // Ping a custom endpoint: a cheap reachability check (the models list doubles
+  // as a connectivity probe for OpenAI-compatible + Anthropic proxies).
+  safeHandle('ping-custom-endpoint', async (_, cfg: { type: 'openai' | 'claude'; baseUrl: string; apiKey: string }) => {
+    try {
+      let apiKey = (cfg.apiKey || '').trim();
+      if (!apiKey || apiKey.includes('•') || /^sk-\.\.\./.test(apiKey)) {
+        const { CredentialsManager } = require('./services/CredentialsManager');
+        apiKey = CredentialsManager.getInstance().getCustomLlmEndpoint()?.apiKey || '';
+      }
+      const { fetchCustomEndpointModels } = require('./utils/modelFetcher');
+      const models = await fetchCustomEndpointModels(cfg.type, cfg.baseUrl, apiKey);
+      return { success: true, reachable: true, modelCount: models.length };
+    } catch (error: any) {
+      const status = error?.response?.status;
+      // Auth errors still prove the host is reachable.
+      const reachable = status === 401 || status === 403;
+      return { success: false, reachable, error: status ? `HTTP ${status}` : (error.message || 'Unreachable') };
+    }
+  });
+
   safeHandle('set-openai-api-key', async (_, apiKey: string) => {
     try {
       const { CredentialsManager } = require('./services/CredentialsManager');
@@ -1983,6 +2053,18 @@ export function initializeIpcHandlers(appState: AppState): void {
         sttIbmKey: creds.ibmWatsonApiKey ? `sk-...${creds.ibmWatsonApiKey.slice(-4)}` : '',
         sttSonioxKey: creds.sonioxApiKey ? `sk-...${creds.sonioxApiKey.slice(-4)}` : '',
         openAiSttBaseUrl: creds.openAiSttBaseUrl || '',
+        // Custom LLM endpoint (proxy / OmniRouter / local IP). API key is
+        // returned masked; baseUrl/type/model are needed by the settings UI +
+        // model selector.
+        customLlmEndpoint: creds.customLlmEndpoint
+          ? {
+              type: creds.customLlmEndpoint.type,
+              baseUrl: creds.customLlmEndpoint.baseUrl,
+              model: creds.customLlmEndpoint.model,
+              models: creds.customLlmEndpoint.models || [creds.customLlmEndpoint.model],
+              hasApiKey: !!creds.customLlmEndpoint.apiKey,
+            }
+          : null,
         hasTavilyKey: hasKey(creds.tavilyApiKey),
         // Dynamic Model Discovery - preferred models
         geminiPreferredModel: creds.geminiPreferredModel || undefined,
@@ -2089,7 +2171,9 @@ export function initializeIpcHandlers(appState: AppState): void {
         | 'azure'
         | 'ibmwatson'
         | 'soniox'
-        | 'local-whisper',
+        | 'local-whisper'
+        | 'native-sherpa'
+        | 'native-vosk',
     ) => {
       try {
         const { CredentialsManager } = require('./services/CredentialsManager');
@@ -2942,6 +3026,146 @@ export function initializeIpcHandlers(appState: AppState): void {
   safeHandle('local-whisper-get-hardware', () => {
     const { detectHardware } = require('./audio/whisper/hardwareDetect');
     return detectHardware();
+  });
+
+  // ==========================================
+  // Native-STT (sherpa-onnx / VOSK) Model Handlers
+  // ==========================================
+  // These engines ship their own model archives (sherpa = .tar.bz2, vosk = .zip)
+  // downloaded into userData/native-stt-models, separate from the transformers.js
+  // Whisper cache. See electron/audio/native-stt/.
+
+  const activeNativeSttDownloads = new Map<string, { cancel: () => void }>();
+
+  const broadcastNativeStt = (channel: string, payload: any) => {
+    BrowserWindow.getAllWindows().forEach((win) => {
+      if (!win.isDestroyed()) win.webContents.send(channel, payload);
+    });
+  };
+
+  const isSelectedNativeSttModel = (modelId: string): boolean => {
+    const sm = SettingsManager.getInstance();
+    return sm.get('nativeSherpaModel') === modelId || sm.get('nativeVoskModel') === modelId;
+  };
+
+  safeHandle('native-stt-get-models', async () => {
+    try {
+      const { getNativeSttCatalogWithStatus } = require('./audio/native-stt/modelDownloader');
+      const sm = SettingsManager.getInstance();
+      const models = getNativeSttCatalogWithStatus(new Set(activeNativeSttDownloads.keys()));
+      return {
+        models,
+        activeSherpaModel: sm.get('nativeSherpaModel') ?? '',
+        activeVoskModel: sm.get('nativeVoskModel') ?? '',
+      };
+    } catch (e: any) {
+      console.error('[IPC] native-stt-get-models error:', e.message);
+      return { models: [], activeSherpaModel: '', activeVoskModel: '' };
+    }
+  });
+
+  // Set the active native model. The engine (sherpa/vosk) is inferred from the
+  // model's catalog entry, and the matching sttProvider credential is selected
+  // so the next reconfigure constructs the right provider.
+  safeHandle('native-stt-set-model', async (_, modelId: string) => {
+    try {
+      const { getNativeSttModel } = require('./audio/native-stt/catalog');
+      const model = getNativeSttModel(modelId);
+      if (!model) return { success: false, error: 'unknown-model' };
+      const sm = SettingsManager.getInstance();
+      const { CredentialsManager } = require('./services/CredentialsManager');
+      if (model.engine === 'vosk') {
+        sm.set('nativeVoskModel', modelId);
+        CredentialsManager.getInstance().setSttProvider('native-vosk');
+      } else {
+        sm.set('nativeSherpaModel', modelId);
+        CredentialsManager.getInstance().setSttProvider('native-sherpa');
+      }
+      try {
+        await appState.reconfigureSttProvider();
+      } catch (err: any) {
+        console.warn('[IPC] native-stt-set-model saved; STT reconfigure failed:', err?.message || err);
+      }
+      BrowserWindow.getAllWindows().forEach((win) => {
+        if (!win.isDestroyed()) win.webContents.send('credentials-changed');
+      });
+      return { success: true };
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  });
+
+  safeHandle('native-stt-delete-model', async (_, modelId: string) => {
+    try {
+      const { deleteNativeSttModel } = require('./audio/native-stt/modelDownloader');
+      deleteNativeSttModel(modelId);
+      // Clear the selection if the deleted model was active.
+      const sm = SettingsManager.getInstance();
+      if (sm.get('nativeSherpaModel') === modelId) sm.set('nativeSherpaModel', '');
+      if (sm.get('nativeVoskModel') === modelId) sm.set('nativeVoskModel', '');
+      return { success: true };
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  });
+
+  safeHandle('native-stt-start-download', async (_event, modelId: string, options?: { repair?: boolean }) => {
+    if (activeNativeSttDownloads.has(modelId)) {
+      return { success: false, error: 'already-downloading' };
+    }
+    try {
+      const { downloadNativeSttModel, deleteNativeSttModel, isNativeSttModelCached } =
+        require('./audio/native-stt/modelDownloader');
+      const { getNativeSttModel } = require('./audio/native-stt/catalog');
+      const model = getNativeSttModel(modelId);
+      if (!model) return { success: false, error: 'unknown-model' };
+      if (options?.repair) deleteNativeSttModel(modelId);
+      if (isNativeSttModelCached(model)) return { success: true };
+
+      const { promise, handle } = downloadNativeSttModel(
+        modelId,
+        (p: { loadedBytes: number; totalBytes: number; progress: number }) => {
+          broadcastNativeStt('native-stt-download-progress', {
+            modelId,
+            progress: p.progress,
+            loadedBytes: p.loadedBytes,
+            totalBytes: p.totalBytes,
+          });
+        },
+      );
+      activeNativeSttDownloads.set(modelId, handle);
+      promise
+        .then(() => {
+          activeNativeSttDownloads.delete(modelId);
+          broadcastNativeStt('native-stt-download-complete', { modelId });
+          if (isSelectedNativeSttModel(modelId)) {
+            appState.reconfigureSttProvider().catch((err: Error) => {
+              console.warn('[IPC] native-stt reconfigure after download failed:', err.message);
+            });
+          }
+        })
+        .catch((err: Error) => {
+          activeNativeSttDownloads.delete(modelId);
+          const paused = err.message === 'cancelled';
+          broadcastNativeStt('native-stt-download-error', {
+            modelId,
+            error: paused ? 'Download paused.' : err.message,
+            paused,
+          });
+        });
+      return { success: true };
+    } catch (e: any) {
+      activeNativeSttDownloads.delete(modelId);
+      return { success: false, error: e.message };
+    }
+  });
+
+  safeHandle('native-stt-cancel-download', async (_, modelId: string) => {
+    const handle = activeNativeSttDownloads.get(modelId);
+    if (!handle) return { success: true };
+    handle.cancel();
+    activeNativeSttDownloads.delete(modelId);
+    return { success: true };
   });
 
   // ==========================================
@@ -5130,12 +5354,6 @@ export function initializeIpcHandlers(appState: AppState): void {
           if (typeof updates.customContext !== 'string') {
             return { success: false, error: 'Mode context must be text.' };
           }
-          if (updates.customContext.length > ModesManager.MAX_DIRECT_CONTEXT_CHARS) {
-            return {
-              success: false,
-              error: `Mode context is limited to ${ModesManager.MAX_DIRECT_CONTEXT_CHARS} characters.`,
-            };
-          }
         }
         mgr.updateMode(id, updates);
         return { success: true };
@@ -5654,7 +5872,7 @@ export function initializeIpcHandlers(appState: AppState): void {
         // budget; an inter-token stall guard protects long answers.
         await raceStreamWithDeadline({
           stream: stream as AsyncGenerator<string>,
-          firstUsefulDeadlineMs: firstUsefulDeadlineMs('general_meeting_answer'),
+          firstUsefulDeadlineMs: firstUsefulDeadlineMs('general_meeting_answer', llmHelper.isCurrentModelCustomEndpoint?.() === true),
           isUsefulYet: () => full.trim().length >= 5,
           shouldAbort: () => {
             if (_chatStreamId !== myStreamId) {

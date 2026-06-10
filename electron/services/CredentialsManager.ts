@@ -41,8 +41,23 @@ export interface StoredCredentials {
     customProviders?: CustomProvider[];
     curlProviders?: CurlProvider[];
     defaultModel?: string;
+    /**
+     * Custom LLM endpoint (proxy / self-hosted / OmniRouter / local IP). One
+     * card, two fields (base URL + API key) + a type toggle. When set, the
+     * matching SDK client (OpenAI or Anthropic) is re-pointed at `baseUrl` and
+     * `model` becomes a selectable model id. Empty/unset → feature off.
+     */
+    customLlmEndpoint?: {
+        type: 'openai' | 'claude';
+        baseUrl: string;
+        apiKey: string;
+        /** The active/selected model id. */
+        model: string;
+        /** All models discovered via Fetch — each becomes a selectable "active model". */
+        models?: string[];
+    };
     // STT Provider settings
-    sttProvider?: 'none' | 'google' | 'groq' | 'openai' | 'deepgram' | 'elevenlabs' | 'azure' | 'ibmwatson' | 'soniox' | 'local-whisper';
+    sttProvider?: 'none' | 'google' | 'groq' | 'openai' | 'deepgram' | 'elevenlabs' | 'azure' | 'ibmwatson' | 'soniox' | 'local-whisper' | 'native-sherpa' | 'native-vosk';
     groqSttApiKey?: string;
     groqSttModel?: string;
     openAiSttApiKey?: string;
@@ -146,6 +161,30 @@ export class CredentialsManager {
 
     public getOpenAiSttBaseUrl(): string | undefined {
         return this.credentials.openAiSttBaseUrl;
+    }
+
+    public getCustomLlmEndpoint(): StoredCredentials['customLlmEndpoint'] | undefined {
+        return this.credentials.customLlmEndpoint;
+    }
+
+    /** Set or clear (pass null) the custom LLM endpoint. */
+    public setCustomLlmEndpoint(cfg: { type: 'openai' | 'claude'; baseUrl: string; apiKey: string; model: string; models?: string[] } | null): void {
+        if (!cfg || !cfg.baseUrl?.trim() || !cfg.model?.trim()) {
+            this.credentials.customLlmEndpoint = undefined;
+        } else {
+            const models = Array.from(
+                new Set([cfg.model.trim(), ...(cfg.models || [])].map((m) => (m || '').trim()).filter(Boolean)),
+            );
+            this.credentials.customLlmEndpoint = {
+                type: cfg.type === 'claude' ? 'claude' : 'openai',
+                baseUrl: cfg.baseUrl.trim(),
+                apiKey: (cfg.apiKey || '').trim(),
+                model: cfg.model.trim(),
+                models,
+            };
+        }
+        this.saveCredentials();
+        console.log(`[CredentialsManager] Custom LLM endpoint ${this.credentials.customLlmEndpoint ? `set (${this.credentials.customLlmEndpoint.type} → ${this.credentials.customLlmEndpoint.baseUrl})` : 'cleared'}`);
     }
 
     public getElevenLabsApiKey(): string | undefined {

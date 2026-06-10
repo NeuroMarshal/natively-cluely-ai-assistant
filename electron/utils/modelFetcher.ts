@@ -36,6 +36,46 @@ export async function fetchProviderModels(
     }
 }
 
+/**
+ * Fetch models from a CUSTOM endpoint (proxy / OmniRouter / self-hosted). Unlike
+ * the named providers, no model-name filtering is applied — a proxy can expose
+ * arbitrary model ids. OpenAI-type → GET {base}/models (base usually ends /v1);
+ * Claude-type → GET {base}/v1/models with x-api-key.
+ */
+export async function fetchCustomEndpointModels(
+    type: 'openai' | 'claude',
+    baseUrl: string,
+    apiKey: string,
+): Promise<ProviderModel[]> {
+    const base = (baseUrl || '').trim().replace(/\/+$/, '');
+    if (!base) throw new Error('Base URL is required');
+
+    if (type === 'claude') {
+        const url = /\/v1$/.test(base) ? `${base}/models` : `${base}/v1/models`;
+        const response = await axios.get(url, {
+            headers: { 'x-api-key': apiKey || '', 'anthropic-version': '2023-06-01' },
+            timeout: 15000,
+        });
+        const models: any[] = response.data?.data || [];
+        return models
+            .map((m: any) => ({ id: m.id, label: m.id }))
+            .filter((m) => m.id)
+            .sort((a, b) => a.label.localeCompare(b.label));
+    }
+
+    // OpenAI-compatible: base typically already includes /v1.
+    const url = /\/v\d+$/.test(base) ? `${base}/models` : `${base}/v1/models`;
+    const response = await axios.get(url, {
+        headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
+        timeout: 15000,
+    });
+    const models: any[] = response.data?.data || response.data?.models || [];
+    return models
+        .map((m: any) => ({ id: m.id || m.name, label: m.id || m.name }))
+        .filter((m) => m.id)
+        .sort((a, b) => a.label.localeCompare(b.label));
+}
+
 // ─── OpenAI ──────────────────────────────────────────────────────────────────
 
 async function fetchOpenAIModels(apiKey: string): Promise<ProviderModel[]> {

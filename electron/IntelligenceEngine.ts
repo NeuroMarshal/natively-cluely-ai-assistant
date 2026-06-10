@@ -1010,9 +1010,14 @@ export class IntelligenceEngine extends EventEmitter {
             // total live ceiling so we never abort to empty. After streaming begins,
             // an inter-token STALL guard (not a wall-clock cap) protects long
             // answers from truncation while still killing a mid-stream hang.
-            const firstUsefulDeadline = hasLiveFallback
-                ? firstUsefulDeadlineMs(answerPlan.answerType)
-                : LIVE_TOTAL_HARD_TIMEOUT_MS;
+            // Custom-endpoint models (user proxy) always get the relaxed cap —
+            // their TTFT routinely exceeds the standard budget.
+            const viaCustomEndpoint = (this.llmHelper as any).isCurrentModelCustomEndpoint?.() === true;
+            const firstUsefulDeadline = viaCustomEndpoint
+                ? firstUsefulDeadlineMs(answerPlan.answerType, true)
+                : hasLiveFallback
+                    ? firstUsefulDeadlineMs(answerPlan.answerType)
+                    : LIVE_TOTAL_HARD_TIMEOUT_MS;
             let liveDeadlineFired = false;
 
             const emitChunk = (chunk: string) => {

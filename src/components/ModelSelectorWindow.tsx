@@ -88,6 +88,23 @@ const ModelSelectorWindow = () => {
                     }
                 }
 
+                // Custom user endpoint (proxy / OmniRouter / local IP). Every model
+                // fetched from the endpoint is selectable here.
+                const customEndpoint = (creds as any)?.customLlmEndpoint;
+                if (customEndpoint?.baseUrl) {
+                    const customModels: string[] = customEndpoint.models?.length
+                        ? customEndpoint.models
+                        : (customEndpoint.model ? [customEndpoint.model] : []);
+                    customModels.forEach((m: string) => {
+                        models.push({
+                            id: m,
+                            name: `${m} (Custom Endpoint)`,
+                            type: 'cloud',
+                            provider: customEndpoint.type,
+                        });
+                    });
+                }
+
                 // Custom Providers
                 customProviders.forEach((p: any) => {
                     models.push({ id: p.id, name: p.name, type: 'custom' });

@@ -3,6 +3,7 @@ import { Plus, Trash2, Edit2, AlertCircle, CheckCircle, Save, ChevronDown, Check
 import { CODEX_CLI_MODEL, CODEX_CLI_MODEL_PRESETS, codexCliSelectorId, STANDARD_CLOUD_MODELS, prettifyModelId } from '../../utils/modelUtils';
 import { validateCurl } from '../../lib/curl-validator';
 import { ProviderCard } from './ProviderCard';
+import { CustomEndpointCard } from './CustomEndpointCard';
 
 const CODEX_SERVICE_TIERS = ['default', 'fast', 'flex'] as const;
 const CODEX_MODEL_REASONING_EFFORTS = ['low', 'medium', 'high', 'xhigh'] as const;
@@ -165,6 +166,9 @@ export const AIProvidersSettings: React.FC = () => {
     // --- Dynamic Model Discovery ---
     const [preferredModels, setPreferredModels] = useState<Record<string, string>>({});
 
+    // --- Custom Endpoint (proxy / OmniRouter / local IP) — its fetched models become active models ---
+    const [customEndpoint, setCustomEndpoint] = useState<{ type: 'openai' | 'claude'; baseUrl: string; model: string; models: string[] } | null>(null);
+
     // --- Screen Understanding (vision routing) ---
     const [screenUnderstandingMode, setScreenUnderstandingMode] = useState<'vision_first' | 'vision_only' | 'private_vision'>('vision_first');
     const [technicalInterviewVisionFirst, setTechnicalInterviewVisionFirst] = useState<boolean>(true);
@@ -199,6 +203,19 @@ export const AIProvidersSettings: React.FC = () => {
                     if (creds.claudePreferredModel) pm.claude = creds.claudePreferredModel;
                     if (creds.deepseekPreferredModel) pm.deepseek = creds.deepseekPreferredModel;
                     setPreferredModels(pm);
+
+                    // Custom endpoint + its fetched models (selectable as active models)
+                    const ep = (creds as any).customLlmEndpoint;
+                    if (ep?.baseUrl) {
+                        setCustomEndpoint({
+                            type: ep.type === 'claude' ? 'claude' : 'openai',
+                            baseUrl: ep.baseUrl,
+                            model: ep.model || '',
+                            models: ep.models?.length ? ep.models : (ep.model ? [ep.model] : []),
+                        });
+                    } else {
+                        setCustomEndpoint(null);
+                    }
                 }
 
                 // Now it's safe to read fast mode — hasStoredKey is already set so
@@ -481,6 +498,29 @@ export const AIProvidersSettings: React.FC = () => {
         }
     };
 
+    // Re-read the custom endpoint after the card saves / fetches, so the Active
+    // Model dropdown immediately reflects the newly fetched models.
+    const refreshCustomEndpoint = async () => {
+        try {
+            // @ts-ignore
+            const creds = await window.electronAPI?.getStoredCredentials?.();
+            const ep = (creds as any)?.customLlmEndpoint;
+            if (ep?.baseUrl) {
+                setCustomEndpoint({
+                    type: ep.type === 'claude' ? 'claude' : 'openai',
+                    baseUrl: ep.baseUrl,
+                    model: ep.model || '',
+                    models: ep.models?.length ? ep.models : (ep.model ? [ep.model] : []),
+                });
+            } else {
+                setCustomEndpoint(null);
+            }
+            // @ts-ignore — keep the Active Model selector in sync with the runtime model
+            const result = await window.electronAPI?.getDefaultModel?.();
+            if (result?.model) setDefaultModel(result.model);
+        } catch { /* noop */ }
+    };
+
     const openKeyUrl = (provider: string) => {
         const urls: Record<string, string> = {
             gemini: 'https://aistudio.google.com/app/apikey',
@@ -603,6 +643,12 @@ export const AIProvidersSettings: React.FC = () => {
                                     if (!opts.find(o => o.id === id)) {
                                         opts.push({ id, name: `${CODEX_CLI_MODEL.name}: ${model.name}` });
                                     }
+                                });
+                            }
+                            // Custom endpoint — every fetched model is an active model.
+                            if (customEndpoint?.baseUrl) {
+                                customEndpoint.models.forEach(m => {
+                                    if (!opts.find(o => o.id === m)) opts.push({ id: m, name: `${m} (Custom Endpoint)` });
                                 });
                             }
                             customProviders.forEach(p => opts.push({ id: p.id, name: p.name }));
@@ -763,6 +809,9 @@ export const AIProvidersSettings: React.FC = () => {
                         keyUrl="https://platform.deepseek.com/api_keys"
                         onPreferredModelChange={(model) => setPreferredModels(prev => ({ ...prev, deepseek: model }))}
                     />
+
+                    {/* Custom endpoint (proxy / OmniRouter / local IP) */}
+                    <CustomEndpointCard onSaved={refreshCustomEndpoint} />
 
                 </div>
             </div>

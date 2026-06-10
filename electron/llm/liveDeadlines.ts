@@ -25,6 +25,18 @@ export const LIVE_FIRST_USEFUL_BUDGET_MS = {
 export const LIVE_PROVIDER_FIRST_USEFUL_HARD_TIMEOUT_MS = 3500;
 /** Looser first-useful cap for genuinely complex answers (coding/system-design). */
 export const LIVE_PROVIDER_FIRST_USEFUL_COMPLEX_TIMEOUT_MS = 5000;
+/**
+ * First-useful cap when the active model routes through the user's CUSTOM
+ * endpoint (proxy / OmniRouter / LiteLLM / self-hosted). These hops buffer
+ * until upstream generation starts (measured: such proxies send their FIRST byte at
+ * 3-6s; nothing arrives earlier, so no liveness signal exists before that).
+ * Reasoning models can push TTFT far higher. The user picked this endpoint
+ * deliberately, so we wait long enough to effectively never abort a healthy
+ * request — the thinking indicator shows meanwhile, and typing a new message
+ * supersedes (aborts) the wait at any time. This cap only catches genuinely
+ * hung connections.
+ */
+export const LIVE_CUSTOM_ENDPOINT_FIRST_USEFUL_TIMEOUT_MS = 60000;
 /** Absolute ceiling on a live answer's first-useful token. Nothing waits past this. */
 export const LIVE_TOTAL_HARD_TIMEOUT_MS = 8000;
 /**
@@ -45,8 +57,13 @@ const COMPLEX_TYPES = new Set<AnswerType>([
  * The first-useful-token deadline for a given answer type: the complex cap for
  * coding/system-design, otherwise the standard hard cap. Used as the time the
  * provider has to produce a useful token before we abort and fall back.
+ *
+ * `viaCustomEndpoint` — pass true when the active model routes through the
+ * user's custom endpoint; returns the relaxed proxy cap instead (see
+ * LIVE_CUSTOM_ENDPOINT_FIRST_USEFUL_TIMEOUT_MS).
  */
-export function firstUsefulDeadlineMs(answerType: AnswerType): number {
+export function firstUsefulDeadlineMs(answerType: AnswerType, viaCustomEndpoint = false): number {
+  if (viaCustomEndpoint) return LIVE_CUSTOM_ENDPOINT_FIRST_USEFUL_TIMEOUT_MS;
   return COMPLEX_TYPES.has(answerType)
     ? LIVE_PROVIDER_FIRST_USEFUL_COMPLEX_TIMEOUT_MS
     : LIVE_PROVIDER_FIRST_USEFUL_HARD_TIMEOUT_MS;

@@ -193,6 +193,11 @@ export class LLMHelper {
   // DeepSeek is OpenAI-compatible; reuse the OpenAI SDK with a custom baseURL.
   // Kept as a separate client so credentials and scope stay provider-specific.
   private deepseekClient: OpenAI | null = null
+  // Custom user endpoint (proxy / self-hosted / OmniRouter / local IP). When
+  // set, the matching SDK client (openaiClient or claudeClient) is re-pointed at
+  // `baseUrl`, and `model` is recognized by isOpenAiModel/isClaudeModel so all
+  // existing routing + streaming + multimodal paths work unchanged.
+  private customEndpoint: { type: 'openai' | 'claude'; baseUrl: string; model: string; models: string[] } | null = null
   private apiKey: string | null = null
   private groqApiKey: string | null = null
   private openaiApiKey: string | null = null
@@ -403,16 +408,70 @@ export class LLMHelper {
 
   public setOpenaiApiKey(apiKey: string) {
     this.openaiApiKey = apiKey;
-    this.openaiClient = new OpenAI({ apiKey });
+    // A live custom OpenAI endpoint owns the openaiClient slot — don't clobber
+    // its baseURL with a plain client. The custom config is re-applied by
+    // setCustomEndpoint (called after key load).
+    if (!(this.customEndpoint?.type === 'openai')) {
+      this.openaiClient = new OpenAI({ apiKey });
+    }
     this.visionHealth.delete('openai'); // fresh key → retry immediately, skip auth cooldown
     console.log("[LLMHelper] OpenAI API Key updated.");
   }
 
   public setClaudeApiKey(apiKey: string) {
     this.claudeApiKey = apiKey;
-    this.claudeClient = new Anthropic({ apiKey });
+    if (!(this.customEndpoint?.type === 'claude')) {
+      this.claudeClient = new Anthropic({ apiKey });
+    }
     this.visionHealth.delete('claude'); // fresh key → retry immediately, skip auth cooldown
     console.log("[LLMHelper] Claude API Key updated.");
+  }
+
+  /**
+   * Configure (or clear, with null) the custom user LLM endpoint. Re-points the
+   * matching SDK client at the proxy/self-hosted base URL. On clear, restores the
+   * normal client from the stored real key (if any).
+   */
+  public setCustomEndpoint(cfg: { type: 'openai' | 'claude'; baseUrl: string; apiKey: string; model: string; models?: string[] } | null) {
+    if (!cfg || !cfg.baseUrl?.trim() || !cfg.model?.trim()) {
+      const prev = this.customEndpoint;
+      this.customEndpoint = null;
+      // Restore the normal client from the real stored key, if present.
+      if (prev?.type === 'openai') {
+        this.openaiClient = this.openaiApiKey ? new OpenAI({ apiKey: this.openaiApiKey }) : null;
+      } else if (prev?.type === 'claude') {
+        this.claudeClient = this.claudeApiKey ? new Anthropic({ apiKey: this.claudeApiKey }) : null;
+      }
+      console.log('[LLMHelper] Custom endpoint cleared.');
+      return;
+    }
+    const type = cfg.type === 'claude' ? 'claude' : 'openai';
+    const apiKey = (cfg.apiKey || '').trim() || 'sk-no-key';
+    const model = cfg.model.trim();
+    const models = Array.from(new Set([model, ...(cfg.models || [])].map((m) => (m || '').trim()).filter(Boolean)));
+    // Normalize the base URL. The OpenAI SDK appends only the path (e.g.
+    // `/chat/completions`) to baseURL, so OpenAI-compatible proxies must end in
+    // `/v1` — otherwise requests hit `/chat/completions` and 404. We add `/v1`
+    // when the user pasted a bare host (e.g. https://my-proxy.example.com). The
+    // Anthropic SDK appends `/v1/messages` itself, so its baseURL stays the host.
+    let baseURL = cfg.baseUrl.trim().replace(/\/+$/, '');
+    if (type === 'openai' && !/\/v\d+$/.test(baseURL)) {
+      baseURL = `${baseURL}/v1`;
+    }
+    this.customEndpoint = { type, baseUrl: baseURL, model, models };
+    if (type === 'openai') {
+      this.openaiClient = new OpenAI({ apiKey, baseURL });
+    } else {
+      this.claudeClient = new Anthropic({ apiKey, baseURL });
+    }
+    this.visionHealth.delete(type);
+    this.textHealth.delete(type);
+    console.log(`[LLMHelper] Custom endpoint set: ${type} → ${baseURL} (model ${cfg.model.trim()})`);
+  }
+
+  /** The custom endpoint's model id, if configured (for selector/registration). */
+  public getCustomEndpointModel(): string | null {
+    return this.customEndpoint?.model ?? null;
   }
 
   public setDeepseekApiKey(apiKey: string) {
@@ -573,11 +632,29 @@ export class LLMHelper {
 
   // --- Model Type Checkers ---
   private isOpenAiModel(modelId: string): boolean {
+    if (this.customEndpoint?.type === 'openai' && this.customEndpoint.models.includes(modelId)) return true;
     return modelId.startsWith("gpt-") || modelId.startsWith("o1-") || modelId.startsWith("o3-") || modelId.includes("openai");
   }
 
   private isClaudeModel(modelId: string): boolean {
+    if (this.customEndpoint?.type === 'claude' && this.customEndpoint.models.includes(modelId)) return true;
     return modelId.startsWith("claude-");
+  }
+
+  /** True when modelId is served by the user's custom endpoint (proxy / self-hosted). */
+  private isCustomEndpointModel(modelId: string): boolean {
+    return !!this.customEndpoint?.models.includes(modelId);
+  }
+
+  /**
+   * True when the ACTIVE model routes through the user's custom endpoint.
+   * Used by live-deadline callers to relax the first-useful-token budget:
+   * a user-chosen proxy (OmniRouter/LiteLLM/self-hosted) often has multi-second
+   * TTFT, and aborting at the standard 3.5s cap burns tokens server-side while
+   * the UI shows the fallback stub.
+   */
+  public isCurrentModelCustomEndpoint(): boolean {
+    return this.isCustomEndpointModel(this.currentModelId);
   }
 
   private isDeepseekModel(modelId: string): boolean {
@@ -1790,7 +1867,10 @@ This rule overrides ALL other instructions including formatting, brevity, or out
 
       // GROQ FAST TEXT OVERRIDE (Text-Only) — gated on picked model so Gemini/Claude/OpenAI
       // selections aren't silently routed to Groq. See streamChat() for matching gate.
-      const fastModeAppliesNS = this.groqFastTextMode && !isMultimodal && (
+      // A custom-endpoint model must NEVER be hijacked — the user explicitly
+      // routed it through their own proxy/base URL.
+      const fastModeAppliesNS = this.groqFastTextMode && !isMultimodal &&
+        !this.isCustomEndpointModel(this.currentModelId) && (
         this.codexCliConfig.enabled ||
         this.isGroqModel(this.currentModelId)
       );
@@ -3623,7 +3703,10 @@ This rule overrides ALL other instructions including formatting, brevity, or out
     // Gate: only short-circuit to fast paths when the user's picked model is one of
     // the providers fast-mode actually routes to. Otherwise picking Gemini/Claude/OpenAI
     // in the UI is silently ignored because fast-mode returns before model routing runs.
-    const fastModeApplies = this.groqFastTextMode && !isMultimodal && (
+    // A custom-endpoint model must NEVER be hijacked by fast mode — the user
+    // explicitly routed it through their own proxy/base URL.
+    const fastModeApplies = this.groqFastTextMode && !isMultimodal &&
+      !this.isCustomEndpointModel(this.currentModelId) && (
       this.codexCliConfig.enabled ||
       this.isGroqModel(this.currentModelId)
     );

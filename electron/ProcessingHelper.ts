@@ -86,6 +86,14 @@ export class ProcessingHelper {
       this.llmHelper.setDeepseekApiKey(deepseekKey);
     }
 
+    // Custom user LLM endpoint (proxy / OmniRouter / local IP). Applied AFTER the
+    // key setters so it owns the openai/claude client slot when active.
+    const customEndpoint = credManager.getCustomLlmEndpoint();
+    if (customEndpoint) {
+      console.log(`[ProcessingHelper] Applying custom LLM endpoint (${customEndpoint.type} → ${customEndpoint.baseUrl})`);
+      this.llmHelper.setCustomEndpoint(customEndpoint);
+    }
+
     // CRITICAL: Re-initialize IntelligenceManager now that keys are loaded
     // This fixes the issue where buttons don't work in production because of late key loading
     this.appState.getIntelligenceManager().initializeLLMs();

@@ -16,6 +16,10 @@ const flushPendingSource = source.slice(flushPendingStart, flushPendingEnd);
 const listenerStart = source.indexOf('    private attachWorkerListeners(): void');
 const listenerEnd = source.indexOf('    private flushPending(): void', listenerStart);
 const listenerSource = source.slice(listenerStart, listenerEnd);
+const dispatchStart = source.indexOf('    private dispatchFinal');
+const dispatchSource = source.slice(dispatchStart, source.indexOf('    private sendTranscribe', dispatchStart));
+const sendStart = source.indexOf('    private sendTranscribe');
+const sendSource = source.slice(sendStart, source.indexOf('    private postToWorker', sendStart));
 const terminateStart = source.indexOf('    private beginWorkerTermination');
 const terminateEnd = source.indexOf('    private terminateWorkerProcess', terminateStart);
 const terminateSource = source.slice(terminateStart, terminateEnd);
@@ -29,7 +33,11 @@ test('LocalWhisperSTT.stop does not clear queued VAD finals before worker readin
 
 test('LocalWhisperSTT drains queued stop-time finals before terminating worker', () => {
   assert.ok(flushPendingStart >= 0, 'flushPending should exist');
-  assert.match(source, /if \(this\.isDrainingFinals\) \{\n\s+this\.drainingFinalsInFlight\+\+;\n\s+\}\n\s+this\.sendTranscribe\(audio, false\);/);
+  // dispatchFinal falls back to a worker final inference only when no streamed
+  // partial exists; the drain counter is incremented exactly once, inside
+  // sendTranscribe (not also in dispatchFinal — that was a double-count).
+  assert.match(dispatchSource, /this\.sendTranscribe\(audio, false\);/);
+  assert.match(sendSource, /if \(!streaming\) \{\s*\n\s+this\.drainingFinalsInFlight\+\+;\s*\n\s+\}/);
   assert.match(flushPendingSource, /queued\.forEach\(audio => this\.sendTranscribe\(audio, false\)\);/);
   assert.match(listenerSource, /!this\.isActive && !\(this\.isDrainingFinals && msg\.type === 'result'\)/);
   assert.match(listenerSource, /this\.drainingFinalsInFlight = Math\.max\(0, this\.drainingFinalsInFlight - 1\);/);

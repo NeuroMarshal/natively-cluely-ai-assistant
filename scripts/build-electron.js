@@ -49,7 +49,12 @@ build({
   target: 'node20',
   format: 'cjs',          // Electron loads package.json main as CommonJS in this repo
                           // (package.json has no "type": "module").
-  external: ['electron', 'better-sqlite3', 'keytar', 'sqlite-vec'],
+  external: [
+    'electron', 'better-sqlite3', 'keytar', 'sqlite-vec',
+    // Native-STT engines + their archive deps: native addons / dynamic .node
+    // loaders that must stay external (require()'d at runtime, not bundled).
+    'sherpa-onnx-node', 'vosk-koffi', 'koffi', 'tar', 'unbzip2-stream', 'yauzl',
+  ],
   sourcemap: true,
   jsx: 'automatic',
   loader: {

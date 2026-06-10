@@ -1513,6 +1513,36 @@ export class AppState {
       // Channel label disambiguates the two concurrent instances in latency logs.
       lws.setChannel(speaker === 'interviewer' ? 'system' : 'mic');
       stt = lws as any;
+    } else if (sttProvider === 'native-sherpa' || sttProvider === 'native-vosk') {
+      // Native on-device STT engines (sherpa-onnx / VOSK) — separate native
+      // addons that run alongside the transformers.js Whisper pipeline. The
+      // selected model is stored per engine (nativeSherpaModel / nativeVoskModel).
+      const sm = SettingsManager.getInstance();
+      const isVosk = sttProvider === 'native-vosk';
+      const modelId = isVosk ? sm.get('nativeVoskModel') : sm.get('nativeSherpaModel');
+      const { getNativeSttModel } = require('./audio/native-stt/catalog');
+      if (!modelId || !getNativeSttModel(modelId)) {
+        console.warn(`[Main] No ${sttProvider} model selected; falling back to GoogleSTT`);
+        stt = new GoogleSTT(speaker);
+      } else {
+        try {
+          if (isVosk) {
+            const { VoskSTT } = require('./audio/VoskSTT');
+            const v = new VoskSTT(modelId);
+            v.setChannel(speaker === 'interviewer' ? 'system' : 'mic');
+            stt = v as any;
+          } else {
+            const { SherpaStreamingSTT } = require('./audio/SherpaStreamingSTT');
+            const s = new SherpaStreamingSTT(modelId);
+            s.setChannel(speaker === 'interviewer' ? 'system' : 'mic');
+            stt = s as any;
+          }
+          console.log(`[Main] Using ${sttProvider} for ${speaker}, model: ${modelId}`);
+        } catch (e) {
+          console.error(`[Main] Failed to construct ${sttProvider}; falling back to GoogleSTT:`, (e as Error).message);
+          stt = new GoogleSTT(speaker);
+        }
+      }
     } else {
       stt = new GoogleSTT(speaker);
     }

@@ -31,6 +31,13 @@ export interface AppSettings {
     localWhisperPerChannelEnabled?: boolean;
     localWhisperModelMic?: string;
     localWhisperModelSystem?: string;
+    // Native-STT engines (sherpa-onnx, VOSK) — run alongside the transformers.js
+    // Whisper/Moonshine pipeline. The chosen native model is stored per engine so
+    // switching engines in the UI remembers each one's last selection. Active
+    // engine is determined by the sttProvider credential ('native-sherpa' /
+    // 'native-vosk'); see electron/audio/native-stt/catalog.ts.
+    nativeSherpaModel?: string;
+    nativeVoskModel?: string;
     // Execution runtime for local STT and embeddings.
     //   'auto' — native WebGPU first, then whole-model CPU fallback.
     //   'gpu'  — require native WebGPU.

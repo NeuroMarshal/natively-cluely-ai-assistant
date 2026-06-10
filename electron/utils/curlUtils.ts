@@ -271,10 +271,10 @@ export function validateImagePath(imagePath: string, userDataPath: string): { is
         return { isValid: false, reason: 'Path traversal sequences are not allowed' };
     }
 
-    // Block Windows drive paths
-    if (/^[A-Za-z]:\\/.test(imagePath)) {
-        return { isValid: false, reason: 'Windows absolute paths are not allowed' };
-    }
+    // // Block Windows drive paths
+    // if (/^[A-Za-z]:\\/.test(imagePath)) {
+    //     return { isValid: false, reason: 'Windows absolute paths are not allowed' };
+    // }
 
     // Normalize userDataPath for comparison
     const normalizedUserData = userDataPath.replace(/\\/g, '/');

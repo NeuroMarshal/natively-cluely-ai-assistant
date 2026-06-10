@@ -11,7 +11,7 @@
     "build:electron:tsc": "tsc -p electron/tsconfig.json",
     "typecheck:electron": "tsc -p electron/tsconfig.json --noEmit",
     "preview": "vite preview",
-    "postinstall": "cross-env SHARP_IGNORE_GLOBAL_LIBVIPS=1 npm rebuild sharp && node scripts/rebuild-native-electron.js && node scripts/download-models.js && node scripts/ensure-sqlite-vec.js && node scripts/patch-electron-plist.js && node scripts/verify-native-arch.js",
+    "postinstall": "cross-env SHARP_IGNORE_GLOBAL_LIBVIPS=1 npm rebuild sharp && node scripts/rebuild-native-electron.js && node scripts/download-models.js && node scripts/ensure-sqlite-vec.js && node scripts/ensure-vosk-native.js && node scripts/patch-electron-plist.js && node scripts/verify-native-arch.js",
     "rebuild:native": "node scripts/rebuild-native-electron.js && node scripts/verify-native-arch.js",
     "electron:dev": "npm run build:electron && cross-env NODE_ENV=development electron .",
     "electron:build": "npm run build:electron && cross-env NODE_ENV=production electron .",
@@ -79,8 +79,14 @@
     "asarUnpack": [
       "**/*.node",
       "**/*.dylib",
+      "**/*.dll",
+      "**/*.so",
+      "**/*.so.*",
       "**/vectorSearchWorker.js",
-      "**/whisperWorker.js"
+      "**/whisperWorker.js",
+      "**/node_modules/sherpa-onnx-*/**",
+      "**/node_modules/vosk-koffi/**",
+      "**/node_modules/koffi/**"
     ],
     "directories": {
       "output": "release",
@@ -272,14 +278,18 @@
     "remark-math": "^6.0.0",
     "screenshot-desktop": "^1.15.0",
     "sharp": "^0.34.5",
+    "sherpa-onnx-node": "^1.13.2",
     "sqlite-vec": "^0.1.7-alpha.2",
     "sqlite3": "^5.1.7",
     "tailwind-merge": "^2.5.4",
     "tap": "^21.5.0",
+    "tar": "^7.5.16",
     "tesseract.js": "^5.0.5",
     "three": "^0.182.0",
     "tree-kill": "^1.2.2",
+    "unbzip2-stream": "^1.4.3",
     "uuid": "^11.0.3",
+    "vosk-koffi": "^1.1.1",
     "ws": "^8.19.0"
   },
   "optionalDependencies": {

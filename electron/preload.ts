@@ -64,6 +64,7 @@ interface ElectronAPI {
   setGroqApiKey: (apiKey: string) => Promise<{ success: boolean; error?: string }>;
   setOpenaiApiKey: (apiKey: string) => Promise<{ success: boolean; error?: string }>;
   setClaudeApiKey: (apiKey: string) => Promise<{ success: boolean; error?: string }>;
+  setCustomLlmEndpoint: (cfg: { type: 'openai' | 'claude'; baseUrl: string; apiKey: string; model: string; models?: string[] } | null) => Promise<{ success: boolean; error?: string }>;
   setDeepseekApiKey: (apiKey: string) => Promise<{ success: boolean; error?: string }>;
   getStoredCredentials: () => Promise<{
     hasGeminiKey: boolean;
@@ -150,6 +151,19 @@ interface ElectronAPI {
     recommendation: string;
     recommendedModel: string;
   }>;
+  // Native-STT engines (sherpa-onnx / VOSK)
+  nativeSttGetModels: () => Promise<{ models: any[]; activeSherpaModel: string; activeVoskModel: string }>;
+  nativeSttSetModel: (modelId: string) => Promise<{ success: boolean; error?: string }>;
+  nativeSttDeleteModel: (modelId: string) => Promise<{ success: boolean; error?: string }>;
+  nativeSttStartDownload: (modelId: string, options?: { repair?: boolean }) => Promise<{ success: boolean; error?: string }>;
+  nativeSttCancelDownload: (modelId: string) => Promise<{ success: boolean; error?: string }>;
+  onNativeSttDownloadProgress: (
+    callback: (data: { modelId: string; progress: number; loadedBytes?: number; totalBytes?: number }) => void,
+  ) => () => void;
+  onNativeSttDownloadComplete: (callback: (data: { modelId: string }) => void) => () => void;
+  onNativeSttDownloadError: (
+    callback: (data: { modelId: string; error: string; paused?: boolean }) => void,
+  ) => () => void;
   // Local embedding models (semantic search over the knowledge DB)
   embeddingModelGetModels: () => Promise<{ models: any[]; activeModelId: string; selectedModelId: string | null }>;
   embeddingModelSetModel: (modelId: string) => Promise<{ success: boolean; error?: string }>;
@@ -1075,6 +1089,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   setGroqApiKey: (apiKey: string) => ipcRenderer.invoke('set-groq-api-key', apiKey),
   setOpenaiApiKey: (apiKey: string) => ipcRenderer.invoke('set-openai-api-key', apiKey),
   setClaudeApiKey: (apiKey: string) => ipcRenderer.invoke('set-claude-api-key', apiKey),
+  setCustomLlmEndpoint: (cfg: { type: 'openai' | 'claude'; baseUrl: string; apiKey: string; model: string; models?: string[] } | null) => ipcRenderer.invoke('set-custom-llm-endpoint', cfg),
   setDeepseekApiKey: (apiKey: string) => ipcRenderer.invoke('set-deepseek-api-key', apiKey),
   getStoredCredentials: () => ipcRenderer.invoke('get-stored-credentials'),
 
@@ -1151,6 +1166,30 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   localWhisperPreload: (modelId?: string) => ipcRenderer.invoke('local-whisper-preload', modelId),
   localWhisperGetHardware: () => ipcRenderer.invoke('local-whisper-get-hardware'),
+
+  // Native-STT engines (sherpa-onnx / VOSK)
+  nativeSttGetModels: () => ipcRenderer.invoke('native-stt-get-models'),
+  nativeSttSetModel: (modelId: string) => ipcRenderer.invoke('native-stt-set-model', modelId),
+  nativeSttDeleteModel: (modelId: string) => ipcRenderer.invoke('native-stt-delete-model', modelId),
+  nativeSttStartDownload: (modelId: string, options?: { repair?: boolean }) =>
+    ipcRenderer.invoke('native-stt-start-download', modelId, options),
+  nativeSttCancelDownload: (modelId: string) =>
+    ipcRenderer.invoke('native-stt-cancel-download', modelId),
+  onNativeSttDownloadProgress: (cb: (data: { modelId: string; progress: number; loadedBytes?: number; totalBytes?: number }) => void) => {
+    const listener = (_: any, data: any) => cb(data);
+    ipcRenderer.on('native-stt-download-progress', listener);
+    return () => ipcRenderer.removeListener('native-stt-download-progress', listener);
+  },
+  onNativeSttDownloadComplete: (cb: (data: { modelId: string }) => void) => {
+    const listener = (_: any, data: any) => cb(data);
+    ipcRenderer.on('native-stt-download-complete', listener);
+    return () => ipcRenderer.removeListener('native-stt-download-complete', listener);
+  },
+  onNativeSttDownloadError: (cb: (data: { modelId: string; error: string; paused?: boolean }) => void) => {
+    const listener = (_: any, data: any) => cb(data);
+    ipcRenderer.on('native-stt-download-error', listener);
+    return () => ipcRenderer.removeListener('native-stt-download-error', listener);
+  },
 
   // Local Embedding Models
   embeddingModelGetModels: () => ipcRenderer.invoke('embedding-model-get-models'),
@@ -1968,6 +2007,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Dynamic Model Discovery
   fetchProviderModels: (provider: 'gemini' | 'groq' | 'openai' | 'claude' | 'deepseek', apiKey: string) =>
     ipcRenderer.invoke('fetch-provider-models', provider, apiKey),
+  fetchCustomEndpointModels: (cfg: { type: 'openai' | 'claude'; baseUrl: string; apiKey: string }) =>
+    ipcRenderer.invoke('fetch-custom-endpoint-models', cfg),
+  pingCustomEndpoint: (cfg: { type: 'openai' | 'claude'; baseUrl: string; apiKey: string }) =>
+    ipcRenderer.invoke('ping-custom-endpoint', cfg),
   setProviderPreferredModel: (provider: 'gemini' | 'groq' | 'openai' | 'claude' | 'deepseek', modelId: string) =>
     ipcRenderer.invoke('set-provider-preferred-model', provider, modelId),
 

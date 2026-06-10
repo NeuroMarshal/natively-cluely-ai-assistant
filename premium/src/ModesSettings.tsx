@@ -279,7 +279,6 @@ const ModesSettings: React.FC<ModesSettingsProps> = ({ onClose }) => {
                       </div>
                       <textarea
                         value={contextDrafts[m.id] ?? ''}
-                        maxLength={12000}
                         onChange={(event) => setContextDrafts((current) => ({
                           ...current,
                           [m.id]: event.target.value,
@@ -289,7 +288,7 @@ const ModesSettings: React.FC<ModesSettingsProps> = ({ onClose }) => {
                         className="w-full resize-y rounded-md border border-white/10 bg-black/35 px-3 py-2 text-xs leading-relaxed text-white outline-none placeholder:text-white/25 focus:border-emerald-400/40"
                       />
                       <div className="mt-1 text-right text-[10px] tabular-nums text-white/30">
-                        {(contextDrafts[m.id] ?? '').length}/12000
+                        {(contextDrafts[m.id] ?? '').length} chars
                       </div>
 
                       <div className="mt-4 flex items-center justify-between gap-3">
