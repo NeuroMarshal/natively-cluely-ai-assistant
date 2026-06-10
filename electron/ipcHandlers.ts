@@ -12,6 +12,7 @@ import { CodexCliService } from './services/CodexCliService';
 import { PhoneMirrorService } from './services/PhoneMirrorService';
 import { SettingsManager } from './services/SettingsManager';
 import { SkillsManager } from './services/SkillsManager';
+import { isTrayIconPreset } from './services/trayIconPreset';
 
 import { AI_RESPONSE_LANGUAGES, RECOGNITION_LANGUAGES } from './config/languages';
 import { planAnswer, formatAnswerPlanForPrompt, isCodingAnswerType, validateAnswerStructure, validateProfileOutput, validateProfileEvidence, buildProfileRepairInstruction, raceStreamWithDeadline, firstUsefulDeadlineMs, isStealthEvasionQuestion, stripProfileTokensFromCoding, isBareFollowUp, buildContextFreeClarification, sanitizeCandidateAnswer, CANDIDATE_VOICE_ANSWER_TYPES } from './llm';
@@ -1311,6 +1312,14 @@ export function initializeIpcHandlers(appState: AppState): void {
   safeHandle('get-disguise', async () => {
     return appState.getDisguise();
   });
+
+  safeHandle('set-tray-icon', async (_, preset) => {
+    if (!isTrayIconPreset(preset)) return { success: false };
+    appState.setTrayIcon(preset);
+    return { success: true };
+  });
+
+  safeHandle('get-tray-icon', async () => appState.getTrayIcon());
 
   safeHandle('set-open-at-login', async (_, openAtLogin: boolean) => {
     app.setLoginItemSettings({
