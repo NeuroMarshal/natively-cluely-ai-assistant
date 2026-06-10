@@ -6,7 +6,7 @@ import {
     Camera, RotateCcw, Eye, Layout, MessageSquare, Crop,
     ChevronDown, ChevronUp, Check, BadgeCheck, Power, Palette, Calendar, Ghost, Sun, Moon, RefreshCw, Info, Globe, FlaskConical, Terminal, Settings, Activity, ExternalLink, Trash2,
     Sparkles, Pencil, Briefcase, Building2, Search, MapPin, CheckCircle, HelpCircle, Zap, SlidersHorizontal, PointerOff,
-    Star, AlertCircle, Gift, Smartphone, Cpu, Shield
+    Star, AlertCircle, Gift, Smartphone, Cpu, Shield, Music, Send, MessageCircle, Gamepad2
 } from 'lucide-react';
 import { AboutSection } from './AboutSection';
 import { HelpSettings } from './settings/HelpSettings';
@@ -369,7 +369,7 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
     const [isUndetectable, setIsUndetectable] = useState(false);
     const [isMousePassthrough, setIsMousePassthrough] = useState(false);
     const [disguiseMode, setDisguiseMode] = useState<'terminal' | 'settings' | 'activity' | 'none'>('none');
-    const [trayIcon, setTrayIcon] = useState<'none' | 'terminal' | 'settings' | 'activity'>('none');
+    const [trayIcon, setTrayIcon] = useState<'none' | 'spotify' | 'telegram' | 'discord' | 'steam'>('none');
     const [openOnLogin, setOpenOnLogin] = useState(false);
     const [themeMode, setThemeMode] = useState<'system' | 'light' | 'dark'>('system');
     const [isThemeDropdownOpen, setIsThemeDropdownOpen] = useState(false);
@@ -2060,9 +2060,10 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                                         <div className="grid grid-cols-2 gap-3">
                                             {([
                                                 { id: 'none', label: 'None (Default)', icon: <Layout size={14} /> },
-                                                { id: 'terminal', label: 'Terminal', icon: <Terminal size={14} /> },
-                                                { id: 'settings', label: 'System Settings', icon: <Settings size={14} /> },
-                                                { id: 'activity', label: 'Activity Monitor', icon: <Activity size={14} /> },
+                                                { id: 'spotify', label: 'Spotify', icon: <Music size={14} /> },
+                                                { id: 'telegram', label: 'Telegram', icon: <Send size={14} /> },
+                                                { id: 'discord', label: 'Discord', icon: <MessageCircle size={14} /> },
+                                                { id: 'steam', label: 'Steam', icon: <Gamepad2 size={14} /> },
                                             ] as const).map((opt) => (
                                                 <button
                                                     key={opt.id}

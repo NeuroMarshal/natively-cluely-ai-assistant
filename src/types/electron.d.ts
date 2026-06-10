@@ -103,8 +103,8 @@ export interface ElectronAPI {
   onOverlayMousePassthroughChanged: (callback: (enabled: boolean) => void) => () => void
   setDisguise: (mode: 'terminal' | 'settings' | 'activity' | 'none') => Promise<{ success: boolean; error?: string }>
   getDisguise: () => Promise<'none' | 'terminal' | 'settings' | 'activity'>
-  setTrayIcon: (preset: 'none' | 'terminal' | 'settings' | 'activity') => Promise<{ success: boolean }>
-  getTrayIcon: () => Promise<'none' | 'terminal' | 'settings' | 'activity'>
+  setTrayIcon: (preset: 'none' | 'spotify' | 'telegram' | 'discord' | 'steam') => Promise<{ success: boolean }>
+  getTrayIcon: () => Promise<'none' | 'spotify' | 'telegram' | 'discord' | 'steam'>
   onDisguiseChanged: (callback: (mode: 'terminal' | 'settings' | 'activity' | 'none') => void) => () => void
   setOpenAtLogin: (open: boolean) => Promise<{ success: boolean; error?: string }>
   getOpenAtLogin: () => Promise<boolean>
