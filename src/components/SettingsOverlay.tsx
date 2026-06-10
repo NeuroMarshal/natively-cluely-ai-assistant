@@ -19,7 +19,7 @@ import { LocalAiRuntimePanel } from './LocalAiRuntimePanel';
 import { NativelyLogoMark } from './NativelyLogoMark';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useShortcuts } from '../hooks/useShortcuts';
-import { isMac } from '../utils/platformUtils';
+import { isMac, isLinux } from '../utils/platformUtils';
 import { useResolvedTheme } from '../hooks/useResolvedTheme';
 import {
     clampOverlayOpacity,
@@ -1443,6 +1443,14 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                                                         <Ghost size={18} className="text-text-primary" />
                                                     )}
                                                     <h3 className="text-lg font-bold text-text-primary">{isUndetectable ? 'Undetectable' : 'Detectable'}</h3>
+                                                    {isLinux && (
+                                                        <span className="relative group/trayinfo flex items-center" tabIndex={0}>
+                                                            <Info size={14} className="text-text-tertiary hover:text-text-secondary cursor-help outline-none" aria-label="Linux behavior" />
+                                                            <span role="tooltip" className="pointer-events-none absolute left-1/2 top-full z-50 mt-2 w-72 -translate-x-1/2 rounded-lg border border-border-subtle bg-bg-card px-3 py-2 text-xs leading-relaxed text-text-secondary shadow-xl opacity-0 transition-opacity duration-150 group-hover/trayinfo:opacity-100 group-focus/trayinfo:opacity-100">
+                                                                On Linux (X11): enabling undetectable hides the tray icon after an app restart. It cannot hide the window from screen sharing or recording, because Electron content protection is macOS and Windows only. The window stays visible in screen captures.
+                                                            </span>
+                                                        </span>
+                                                    )}
                                                 </div>
                                                 <p className="text-xs text-text-secondary">
                                                     Natively is currently {isUndetectable ? 'undetectable' : 'detectable'} by screen-sharing. Visibility depends on the OS and meeting app capture behavior.
