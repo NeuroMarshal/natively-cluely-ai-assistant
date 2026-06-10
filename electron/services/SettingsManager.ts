@@ -8,6 +8,8 @@ export interface AppSettings {
     // can be moved here from CredentialsManager to allow early boot access.
     isUndetectable?: boolean;
     disguiseMode?: 'terminal' | 'settings' | 'activity' | 'none';
+    // Independent tray-icon disguise (NOT driven by disguiseMode). 'none' = real icon.
+    trayIcon?: 'none' | 'terminal' | 'settings' | 'activity';
     verboseLogging?: boolean;
     actionButtonMode?: 'recap' | 'brainstorm';
     groqFastTextMode?: boolean;
