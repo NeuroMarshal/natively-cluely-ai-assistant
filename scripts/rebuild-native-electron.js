@@ -29,9 +29,14 @@
  *      module, so this never goes stale on an Electron bump (unlike a
  *      hardcoded `target=` in .npmrc).
  *
- * `--build-from-source` is passed so we compile for the resolved arch
- * instead of letting prebuild-install download a possibly-wrong-arch
- * prebuilt binary.
+ * `--build-from-source` is passed on darwin/win32 so we compile for the
+ * resolved arch instead of letting prebuild-install download a
+ * possibly-wrong-arch prebuilt binary. On linux-x64 there is no Rosetta arch
+ * drift and the published Electron-ABI prebuilt (e.g.
+ * better-sqlite3-v*-electron-v130-linux-x64) matches the hardware, so we skip
+ * --build-from-source there and let prebuild-install fetch it — this avoids a
+ * mandatory C++ toolchain on Linux (relevant when the host compiler is newer
+ * than the addon supports, e.g. GCC 16).
  */
 const { execFileSync } = require('child_process');
 const fs = require('fs');
@@ -93,17 +98,25 @@ function main() {
     return;
   }
 
+  // On linux-x64 the published Electron-ABI prebuilts match the hardware
+  // exactly (no Rosetta-style arch drift to defeat), so prefer the prebuilt and
+  // skip invoking a C++ toolchain. Keep --build-from-source on darwin (pins the
+  // Rosetta-resolved arch), win32, and arches that may lack a prebuilt (e.g.
+  // linux-arm64).
+  const preferPrebuilt = os.platform() === 'linux' && arch === 'x64';
+
   const args = [
     cli,
     '--force',
     '--arch', arch,
     '--version', electronVersion,
-    '--build-from-source',
+    ...(preferPrebuilt ? [] : ['--build-from-source']),
     '--which-module', MODULES.join(','),
   ];
 
   console.log(
-    `[rebuild-native] Rebuilding [${MODULES.join(', ')}] for Electron ${electronVersion}, arch=${arch} (from source)...`
+    `[rebuild-native] Rebuilding [${MODULES.join(', ')}] for Electron ${electronVersion}, arch=${arch} ` +
+    `(${preferPrebuilt ? 'prefer prebuilt' : 'from source'})...`
   );
 
   // Re-exec node under the correct arch on macOS so the entire toolchain
