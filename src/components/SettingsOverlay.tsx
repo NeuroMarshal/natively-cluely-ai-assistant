@@ -369,6 +369,7 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
     const [isUndetectable, setIsUndetectable] = useState(false);
     const [isMousePassthrough, setIsMousePassthrough] = useState(false);
     const [disguiseMode, setDisguiseMode] = useState<'terminal' | 'settings' | 'activity' | 'none'>('none');
+    const [trayIcon, setTrayIcon] = useState<'none' | 'terminal' | 'settings' | 'activity'>('none');
     const [openOnLogin, setOpenOnLogin] = useState(false);
     const [themeMode, setThemeMode] = useState<'system' | 'light' | 'dark'>('system');
     const [isThemeDropdownOpen, setIsThemeDropdownOpen] = useState(false);
@@ -396,6 +397,7 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
             window.electronAPI?.getUndetectable?.().then(setIsUndetectable).catch(() => { });
             window.electronAPI?.getOverlayMousePassthrough?.().then(setIsMousePassthrough).catch(() => { });
             window.electronAPI?.getDisguise?.().then(setDisguiseMode).catch(() => { });
+            window.electronAPI?.getTrayIcon?.().then((v) => { if (v) setTrayIcon(v); }).catch(() => { });
             window.electronAPI?.getVerboseLogging?.().then(setVerboseLogging).catch(() => { });
             window.electronAPI?.getMeetingRetention?.().then(setMeetingRetention).catch(() => { });
         }
@@ -2039,6 +2041,45 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                                                         {option.icon}
                                                     </div>
                                                     <span className="text-xs font-medium">{option.label}</span>
+                                                </button>
+                                            ))}
+                                        </div>
+                                    </div>
+
+                                    {/* Tray Icon disguise — independent of the process/taskbar disguise above */}
+                                    <div className={`${isLight ? 'bg-bg-card' : 'bg-bg-item-surface'} rounded-xl p-5 border border-border-subtle`}>
+                                        <div className="flex flex-col gap-1 mb-3">
+                                            <div className="flex items-center gap-2">
+                                                <h3 className="text-lg font-bold text-text-primary">Tray Icon</h3>
+                                            </div>
+                                            <p className="text-xs text-text-secondary">
+                                                Swap the system tray icon to disguise the app. Independent of the disguise above.
+                                            </p>
+                                        </div>
+
+                                        <div className="grid grid-cols-2 gap-3">
+                                            {([
+                                                { id: 'none', label: 'None (Default)', icon: <Layout size={14} /> },
+                                                { id: 'terminal', label: 'Terminal', icon: <Terminal size={14} /> },
+                                                { id: 'settings', label: 'System Settings', icon: <Settings size={14} /> },
+                                                { id: 'activity', label: 'Activity Monitor', icon: <Activity size={14} /> },
+                                            ] as const).map((opt) => (
+                                                <button
+                                                    key={opt.id}
+                                                    onClick={async () => {
+                                                        await window.electronAPI?.setTrayIcon?.(opt.id);
+                                                        setTrayIcon(opt.id);
+                                                    }}
+                                                    className={`p-3 rounded-lg border text-left flex items-center gap-3 transition-all ${trayIcon === opt.id
+                                                        ? 'bg-accent-primary border-accent-primary text-white shadow-lg shadow-blue-500/20'
+                                                        : 'bg-bg-input border-border-subtle text-text-secondary hover:text-text-primary hover:bg-bg-subtle-hover'
+                                                        }`}
+                                                >
+                                                    <div className={`w-8 h-8 rounded-md flex items-center justify-center shrink-0 ${trayIcon === opt.id ? 'bg-white/20 text-white' : 'bg-bg-item-surface text-text-secondary'
+                                                        }`}>
+                                                        {opt.icon}
+                                                    </div>
+                                                    <span className="text-xs font-medium">{opt.label}</span>
                                                 </button>
                                             ))}
                                         </div>
