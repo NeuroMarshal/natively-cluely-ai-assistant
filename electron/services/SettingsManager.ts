@@ -9,7 +9,7 @@ export interface AppSettings {
     isUndetectable?: boolean;
     disguiseMode?: 'terminal' | 'settings' | 'activity' | 'none';
     // Independent tray-icon disguise (NOT driven by disguiseMode). 'none' = real icon.
-    trayIcon?: 'none' | 'terminal' | 'settings' | 'activity';
+    trayIcon?: 'none' | 'spotify' | 'telegram' | 'discord' | 'steam';
     verboseLogging?: boolean;
     actionButtonMode?: 'recap' | 'brainstorm';
     groqFastTextMode?: boolean;

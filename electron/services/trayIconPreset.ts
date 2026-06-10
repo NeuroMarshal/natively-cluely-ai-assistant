@@ -3,13 +3,14 @@
 // can be unit-tested without a GUI. Consumed by AppState.applyTrayIcon().
 import * as path from 'path';
 
-export type TrayIconPreset = 'none' | 'terminal' | 'settings' | 'activity';
+export type TrayIconPreset = 'none' | 'spotify' | 'telegram' | 'discord' | 'steam';
 
 export const TRAY_ICON_PRESETS: readonly TrayIconPreset[] = [
   'none',
-  'terminal',
-  'settings',
-  'activity',
+  'spotify',
+  'telegram',
+  'discord',
+  'steam',
 ];
 
 export function isTrayIconPreset(value: unknown): value is TrayIconPreset {
@@ -18,9 +19,10 @@ export function isTrayIconPreset(value: unknown): value is TrayIconPreset {
 
 const DISPLAY_NAMES: Record<TrayIconPreset, string> = {
   none: 'Natively',
-  terminal: 'Terminal',
-  settings: 'System Settings',
-  activity: 'Activity Monitor',
+  spotify: 'Spotify',
+  telegram: 'Telegram',
+  discord: 'Discord',
+  steam: 'Steam',
 };
 
 export function trayIconDisplayName(preset: TrayIconPreset): string {
@@ -38,5 +40,5 @@ export function resolveTrayIconPath(preset: TrayIconPreset, opts: TrayIconPathOp
   if (preset === 'none') {
     return opts.defaultTrayIconPath;
   }
-  return path.join(opts.assetsDir, 'fakeicon', 'win', preset + '.png');
+  return path.join(opts.assetsDir, 'fakeicon', 'tray', preset + '.png');
 }
