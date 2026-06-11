@@ -55,6 +55,8 @@ export interface StoredCredentials {
         model: string;
         /** All models discovered via Fetch — each becomes a selectable "active model". */
         models?: string[];
+        /** Optional extra HTTP headers ("Name: Value" per line) sent to the endpoint. */
+        customHeaders?: string;
     };
     // STT Provider settings
     sttProvider?: 'none' | 'google' | 'groq' | 'openai' | 'deepgram' | 'elevenlabs' | 'azure' | 'ibmwatson' | 'soniox' | 'local-whisper' | 'native-sherpa' | 'native-vosk';
@@ -168,7 +170,7 @@ export class CredentialsManager {
     }
 
     /** Set or clear (pass null) the custom LLM endpoint. */
-    public setCustomLlmEndpoint(cfg: { type: 'openai' | 'claude'; baseUrl: string; apiKey: string; model: string; models?: string[] } | null): void {
+    public setCustomLlmEndpoint(cfg: { type: 'openai' | 'claude'; baseUrl: string; apiKey: string; model: string; models?: string[]; customHeaders?: string } | null): void {
         if (!cfg || !cfg.baseUrl?.trim() || !cfg.model?.trim()) {
             this.credentials.customLlmEndpoint = undefined;
         } else {
@@ -181,6 +183,7 @@ export class CredentialsManager {
                 apiKey: (cfg.apiKey || '').trim(),
                 model: cfg.model.trim(),
                 models,
+                customHeaders: (cfg.customHeaders || '').trim() || undefined,
             };
         }
         this.saveCredentials();
