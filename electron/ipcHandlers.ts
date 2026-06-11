@@ -1724,7 +1724,7 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   });
 
-  safeHandle('set-custom-llm-endpoint', async (_, cfg: { type: 'openai' | 'claude'; baseUrl: string; apiKey: string; model: string; models?: string[] } | null) => {
+  safeHandle('set-custom-llm-endpoint', async (_, cfg: { type: 'openai' | 'claude'; baseUrl: string; apiKey: string; model: string; models?: string[]; customHeaders?: string } | null) => {
     try {
       const { CredentialsManager } = require('./services/CredentialsManager');
       const cm = CredentialsManager.getInstance();
@@ -2063,6 +2063,7 @@ export function initializeIpcHandlers(appState: AppState): void {
               model: creds.customLlmEndpoint.model,
               models: creds.customLlmEndpoint.models || [creds.customLlmEndpoint.model],
               hasApiKey: !!creds.customLlmEndpoint.apiKey,
+              customHeaders: creds.customLlmEndpoint.customHeaders || '',
             }
           : null,
         hasTavilyKey: hasKey(creds.tavilyApiKey),

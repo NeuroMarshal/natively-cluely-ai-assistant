@@ -432,7 +432,22 @@ export class LLMHelper {
    * matching SDK client at the proxy/self-hosted base URL. On clear, restores the
    * normal client from the stored real key (if any).
    */
-  public setCustomEndpoint(cfg: { type: 'openai' | 'claude'; baseUrl: string; apiKey: string; model: string; models?: string[] } | null) {
+  private parseCustomHeaders(raw?: string): Record<string, string> | undefined {
+    if (!raw || !raw.trim()) return undefined;
+    const out: Record<string, string> = {};
+    for (const line of raw.split(/\r?\n/)) {
+      const t = line.trim();
+      if (!t || t.startsWith('#')) continue;
+      const idx = t.indexOf(':');
+      if (idx <= 0) continue;
+      const name = t.slice(0, idx).trim();
+      const value = t.slice(idx + 1).trim();
+      if (name) out[name] = value;
+    }
+    return Object.keys(out).length ? out : undefined;
+  }
+
+  public setCustomEndpoint(cfg: { type: 'openai' | 'claude'; baseUrl: string; apiKey: string; model: string; models?: string[]; customHeaders?: string } | null) {
     if (!cfg || !cfg.baseUrl?.trim() || !cfg.model?.trim()) {
       const prev = this.customEndpoint;
       this.customEndpoint = null;
@@ -458,11 +473,12 @@ export class LLMHelper {
     if (type === 'openai' && !/\/v\d+$/.test(baseURL)) {
       baseURL = `${baseURL}/v1`;
     }
+    const defaultHeaders = this.parseCustomHeaders(cfg.customHeaders);
     this.customEndpoint = { type, baseUrl: baseURL, model, models };
     if (type === 'openai') {
-      this.openaiClient = new OpenAI({ apiKey, baseURL });
+      this.openaiClient = new OpenAI({ apiKey, baseURL, ...(defaultHeaders ? { defaultHeaders } : {}) });
     } else {
-      this.claudeClient = new Anthropic({ apiKey, baseURL });
+      this.claudeClient = new Anthropic({ apiKey, baseURL, ...(defaultHeaders ? { defaultHeaders } : {}) });
     }
     this.visionHealth.delete(type);
     this.textHealth.delete(type);

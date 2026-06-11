@@ -64,7 +64,7 @@ interface ElectronAPI {
   setGroqApiKey: (apiKey: string) => Promise<{ success: boolean; error?: string }>;
   setOpenaiApiKey: (apiKey: string) => Promise<{ success: boolean; error?: string }>;
   setClaudeApiKey: (apiKey: string) => Promise<{ success: boolean; error?: string }>;
-  setCustomLlmEndpoint: (cfg: { type: 'openai' | 'claude'; baseUrl: string; apiKey: string; model: string; models?: string[] } | null) => Promise<{ success: boolean; error?: string }>;
+  setCustomLlmEndpoint: (cfg: { type: 'openai' | 'claude'; baseUrl: string; apiKey: string; model: string; models?: string[]; customHeaders?: string } | null) => Promise<{ success: boolean; error?: string }>;
   setDeepseekApiKey: (apiKey: string) => Promise<{ success: boolean; error?: string }>;
   getStoredCredentials: () => Promise<{
     hasGeminiKey: boolean;
@@ -1089,7 +1089,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   setGroqApiKey: (apiKey: string) => ipcRenderer.invoke('set-groq-api-key', apiKey),
   setOpenaiApiKey: (apiKey: string) => ipcRenderer.invoke('set-openai-api-key', apiKey),
   setClaudeApiKey: (apiKey: string) => ipcRenderer.invoke('set-claude-api-key', apiKey),
-  setCustomLlmEndpoint: (cfg: { type: 'openai' | 'claude'; baseUrl: string; apiKey: string; model: string; models?: string[] } | null) => ipcRenderer.invoke('set-custom-llm-endpoint', cfg),
+  setCustomLlmEndpoint: (cfg: { type: 'openai' | 'claude'; baseUrl: string; apiKey: string; model: string; models?: string[]; customHeaders?: string } | null) => ipcRenderer.invoke('set-custom-llm-endpoint', cfg),
   setDeepseekApiKey: (apiKey: string) => ipcRenderer.invoke('set-deepseek-api-key', apiKey),
   getStoredCredentials: () => ipcRenderer.invoke('get-stored-credentials'),
 

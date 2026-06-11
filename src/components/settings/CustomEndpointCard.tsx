@@ -22,6 +22,7 @@ export function CustomEndpointCard({ onSaved }: { onSaved?: () => void }) {
     const [baseUrl, setBaseUrl] = useState('');
     const [apiKey, setApiKey] = useState('');
     const [model, setModel] = useState('');           // active/selected model id
+    const [customHeaders, setCustomHeaders] = useState('');
     const [hasStoredKey, setHasStoredKey] = useState(false);
     const [configured, setConfigured] = useState(false);
     const [status, setStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
@@ -54,6 +55,7 @@ export function CustomEndpointCard({ onSaved }: { onSaved?: () => void }) {
                 setType(ep.type === 'claude' ? 'claude' : 'openai');
                 setBaseUrl(ep.baseUrl || '');
                 setModel(ep.model || '');
+                setCustomHeaders(ep.customHeaders || '');
                 setHasStoredKey(!!ep.hasApiKey);
                 setApiKey(ep.hasApiKey ? 'sk-••••••••' : '');
                 setConfigured(true);
@@ -78,6 +80,7 @@ export function CustomEndpointCard({ onSaved }: { onSaved?: () => void }) {
             apiKey: keyToSend,
             model: activeModel.trim(),
             models,
+            customHeaders: customHeaders.trim() || undefined,
         });
         if (res?.success) {
             setConfigured(true);
@@ -107,7 +110,7 @@ export function CustomEndpointCard({ onSaved }: { onSaved?: () => void }) {
 
     const clear = async () => {
         await electronAPI?.setCustomLlmEndpoint?.(null);
-        setBaseUrl(''); setApiKey(''); setModel(''); setHasStoredKey(false); setConfigured(false); setStatus('idle');
+        setBaseUrl(''); setApiKey(''); setModel(''); setCustomHeaders(''); setHasStoredKey(false); setConfigured(false); setStatus('idle');
         setFetchedModels([]);
         onSaved?.();
     };
@@ -216,6 +219,21 @@ export function CustomEndpointCard({ onSaved }: { onSaved?: () => void }) {
                     placeholder={hasStoredKey ? '•••• stored' : 'optional'}
                     className="w-full bg-bg-input border border-border-subtle rounded-lg px-3 py-2.5 text-xs text-text-primary focus:outline-none focus:border-accent-primary transition-colors"
                 />
+            </div>
+
+            {/* Custom Headers (optional) — sent as HTTP headers on every request to this endpoint */}
+            <div>
+                <label className="block text-[10px] font-medium text-text-secondary uppercase tracking-wide mb-1">
+                    Custom Headers <span className="text-text-tertiary normal-case">(optional)</span>
+                </label>
+                <textarea
+                    value={customHeaders}
+                    onChange={(e) => setCustomHeaders(e.target.value)}
+                    rows={2}
+                    placeholder={'One per line, e.g.\nX-Api-Key: sk-...\nUser-Agent: my-client/1.0'}
+                    className="w-full bg-bg-input border border-border-subtle rounded-lg px-3 py-2.5 text-xs text-text-primary focus:outline-none focus:border-accent-primary transition-colors font-mono resize-y"
+                />
+                <p className="mt-1 text-[10px] text-text-tertiary">Extra HTTP headers (Name: Value per line) added to every request to this endpoint.</p>
             </div>
 
             {/* Active model — manual entry until models are fetched; after Fetch
