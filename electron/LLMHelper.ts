@@ -3628,6 +3628,30 @@ This rule overrides ALL other instructions including formatting, brevity, or out
       } catch (_modeErr: any) {
         console.warn('[LLMHelper] ModesManager injection failed (non-fatal):', _modeErr?.message);
       }
+    } else if (!skipModeInjection && isUniversalOverride) {
+      // Universal-prompt paths (general chat via CHAT_MODE_PROMPT, the
+      // UNIVERSAL_* answer prompts) carry their own CORE_IDENTITY/
+      // EXECUTION_CONTRACT, so we must NOT append the mode prompt suffix or the
+      // large retrieved reference block — that duplicates the contract and pushes
+      // the latest turn out of recency (the reason these prompts are skipped
+      // above). But the mode's Direct context is short, trusted, user-authored,
+      // and the Modes UI promises it is "added to every request in this mode".
+      // Skipping the whole mode injection silently dropped it from every chat
+      // message. Inject ONLY that block here, prepended as context. The answer
+      // type still scopes it, so sensitive (salary/pricing/strategy) chunks stay
+      // gated to negotiation answers and never leak into a generic chat turn.
+      // Explicit skips (coding/safety) set skipModeInjection=true and are excluded.
+      try {
+        const { ModesManager } = require('./services/ModesManager');
+        const modesMgr = ModesManager.getInstance();
+        const answerType = modeAnswerType(routeOptions);
+        const directModeContext = modesMgr.buildActiveModeDirectContextBlock(answerType);
+        if (directModeContext) {
+          context = context ? `${directModeContext}\n\n${context}` : directModeContext;
+        }
+      } catch (_modeErr: any) {
+        console.warn('[LLMHelper] Direct context injection (universal path) failed (non-fatal):', _modeErr?.message);
+      }
     }
 
     // Preparation
